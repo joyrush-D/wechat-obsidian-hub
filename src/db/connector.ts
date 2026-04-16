@@ -1,6 +1,6 @@
 import initSqlJs, { type Database, type SqlJsStatic } from 'sql.js';
-import { join, dirname } from 'path';
-import { existsSync } from 'fs';
+import { join } from 'path';
+import { existsSync, readFileSync } from 'fs';
 
 export class DbConnector {
   private SQL: SqlJsStatic | null = null;
@@ -18,9 +18,11 @@ export class DbConnector {
     const hasWasm = wasmPath && existsSync(wasmPath);
 
     if (hasWasm) {
-      // Obsidian environment: use the WASM file from plugin directory
+      // Obsidian/Electron: fetch() can't load local files,
+      // so read WASM binary via Node.js fs and pass directly
+      const wasmBinary = readFileSync(wasmPath);
       this.SQL = await initSqlJs({
-        locateFile: () => wasmPath,
+        wasmBinary,
       });
     } else {
       // Node.js / test environment: let sql.js find its own WASM
