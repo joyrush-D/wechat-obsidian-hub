@@ -79,10 +79,17 @@ export default class OWHPlugin extends Plugin {
           });
 
           const today = new Date().toISOString().slice(0, 10);
-          const briefing = await generator.generate(messages, llmClient, today);
 
-          await this.saveBriefing(today, briefing);
-          new Notice(`OWH: Briefing saved to ${this.settings.briefingFolder}/${today}.md`);
+          // Progressive generation: update the note in real-time
+          const briefing = await generator.generateProgressive(
+            messages, llmClient, today,
+            async (content: string, done: boolean) => {
+              await this.saveBriefing(today, content);
+              if (done) {
+                new Notice(`OWH: 简报已生成 → ${this.settings.briefingFolder}/${today}.md`);
+              }
+            },
+          );
         } catch (err) {
           console.error('OWH: Error generating briefing', err);
           new Notice(`OWH: Error — ${(err as Error).message}`);
