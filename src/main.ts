@@ -18,8 +18,15 @@ export default class OWHPlugin extends Plugin {
 
   async onload() {
     await this.loadSettings();
-    await this.dbConnector.init();
 
+    // Pass plugin directory to DB connector for WASM file location
+    // In Obsidian, this.manifest.dir is the plugin's directory path
+    const pluginDir = (this.manifest as any).dir
+      ? join((this.app.vault.adapter as any).basePath || '', (this.manifest as any).dir)
+      : '';
+    this.dbConnector.setPluginDir(pluginDir);
+
+    // Don't init sql.js here — defer to first use to avoid blocking plugin load
     this.addSettingTab(new OWHSettingTab(this.app, this));
 
     // Command: Generate AI briefing
@@ -81,6 +88,7 @@ export default class OWHPlugin extends Plugin {
       name: 'Test WeChat DB Connection',
       callback: async () => {
         try {
+          await this.ensureDbReady();
           const dir = this.settings.decryptedDbDir;
           if (!dir) {
             new Notice('OWH: No DB directory configured. Go to Settings → Decrypted DB Directory.');
@@ -128,6 +136,13 @@ export default class OWHPlugin extends Plugin {
 
   onunload() {
     console.log('OWH: WeChat Obsidian Hub unloaded');
+  }
+
+  /** Lazy-init the DB connector on first use */
+  private async ensureDbReady(): Promise<void> {
+    if (!this.dbConnector.isReady()) {
+      await this.dbConnector.init();
+    }
   }
 
   async loadSettings() {
@@ -247,6 +262,7 @@ export default class OWHPlugin extends Plugin {
   }
 
   private async loadAndParseMessages(): Promise<ParsedMessage[]> {
+    await this.ensureDbReady();
     const dir = this.settings.decryptedDbDir;
     if (!dir) throw new Error('No DB directory configured.');
 
