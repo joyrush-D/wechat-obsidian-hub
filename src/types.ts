@@ -1,6 +1,8 @@
 export interface OWHSettings {
   decryptedDbDir: string;
   wechatDataDir: string;
+  decryptKeyHex: string;           // 64-char hex SQLCipher key (manually provided)
+  decryptMode: 'manual' | 'auto';  // manual = user triggers, auto = on briefing
   aiEndpoint: string;
   aiModel: string;
   briefingFolder: string;
@@ -14,6 +16,8 @@ export interface OWHSettings {
 export const DEFAULT_SETTINGS: OWHSettings = {
   decryptedDbDir: '',
   wechatDataDir: '',
+  decryptKeyHex: '',
+  decryptMode: 'manual',
   aiEndpoint: 'http://localhost:1234/v1',
   aiModel: '',
   briefingFolder: 'WeChat-Briefings',
