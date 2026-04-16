@@ -171,14 +171,77 @@ export default class OWHPlugin extends Plugin {
   }
 
   /**
-   * Decrypt WeChat databases using the configured key.
-   * Calls the Python decrypt script or uses sqlcipher CLI.
+   * Extract the SQLCipher key from the running WeChat process.
+   * Uses ~/wechat-decrypt/find_all_keys_macos (must be compiled first).
+   * Requires WeChat to be re-signed (codesign --force --deep --sign -).
+   */
+  private extractKeyFromWeChat(): string | null {
+    const home = process.env.HOME || '';
+    const toolPath = join(home, 'wechat-decrypt', 'find_all_keys_macos');
+
+    if (!existsSync(toolPath)) {
+      console.log('OWH: Key extraction tool not found at', toolPath);
+      return null;
+    }
+
+    try {
+      // Run the key extractor — it outputs keys to stdout and saves to all_keys.json
+      const output = execSync(`"${toolPath}" 2>/dev/null`, {
+        timeout: 15000,
+        cwd: join(home, 'wechat-decrypt'),
+      }).toString();
+
+      // Parse the output for hex keys (64-char hex strings)
+      const keyMatch = output.match(/[0-9a-f]{64}/i);
+      if (keyMatch) {
+        console.log('OWH: Key extracted successfully');
+        return keyMatch[0].toLowerCase();
+      }
+
+      // Try reading all_keys.json as fallback
+      const keysFile = join(home, 'wechat-decrypt', 'all_keys.json');
+      if (existsSync(keysFile)) {
+        const keysData = JSON.parse(readFileSync(keysFile, 'utf-8'));
+        // all_keys.json format varies; look for hex key strings
+        const jsonStr = JSON.stringify(keysData);
+        const jsonKeyMatch = jsonStr.match(/[0-9a-f]{64}/i);
+        if (jsonKeyMatch) {
+          console.log('OWH: Key found in all_keys.json');
+          return jsonKeyMatch[0].toLowerCase();
+        }
+      }
+    } catch (e) {
+      console.error('OWH: Key extraction failed:', (e as Error).message);
+      // Common failure: WeChat not re-signed or not running
+      if (String(e).includes('attach') || String(e).includes('permission')) {
+        new Notice('OWH: 密钥提取失败——请先对微信重签名：\nsudo codesign --force --deep --sign - /Applications/WeChat.app\n然后重启微信', 10000);
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Decrypt WeChat databases.
+   * Automatically extracts key if not configured.
+   * Uses sqlcipher CLI or Python fallback.
    */
   async decryptDatabases(): Promise<boolean> {
-    const key = this.settings.decryptKeyHex;
+    let key = this.settings.decryptKeyHex;
+
+    // Auto-extract key if not configured
     if (!key || key.length !== 64) {
-      new Notice('OWH: 请先在设置中配置64位解密密钥');
-      return false;
+      new Notice('OWH: 正在自动提取解密密钥...');
+      const extractedKey = this.extractKeyFromWeChat();
+      if (extractedKey) {
+        key = extractedKey;
+        this.settings.decryptKeyHex = key;
+        await this.saveSettings();
+        new Notice(`OWH: 密钥提取成功 (${key.slice(0, 8)}...${key.slice(-8)})`);
+      } else {
+        new Notice('OWH: 自动提取密钥失败。\n请确认：\n1. 微信正在运行\n2. 已执行重签名\n3. 或手动在设置中填入密钥', 8000);
+        return false;
+      }
     }
 
     const wechatDir = this.settings.wechatDataDir || this.detectWeChatDataDir();

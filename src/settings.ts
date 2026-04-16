@@ -90,14 +90,26 @@ export class OWHSettingTab extends PluginSettingTab {
     // Decrypt key
     new Setting(containerEl)
       .setName('解密密钥')
-      .setDesc('64位十六进制 SQLCipher 密钥。可通过 wechat-decrypt 工具获取。')
+      .setDesc('64位十六进制 SQLCipher 密钥。留空则点击"解密"时自动从微信进程提取。')
       .addText(text => text
-        .setPlaceholder('留空则需要先手动运行解密脚本')
+        .setPlaceholder('留空 = 自动提取（需要微信已重签名）')
         .setValue(this.plugin.settings.decryptKeyHex)
         .onChange(async (value) => {
           this.plugin.settings.decryptKeyHex = value.trim();
           await this.plugin.saveSettings();
         }));
+
+    // First-time setup hint
+    const hintEl = containerEl.createEl('div', { cls: 'setting-item-description' });
+    hintEl.style.marginTop = '-10px';
+    hintEl.style.marginBottom = '12px';
+    hintEl.style.fontSize = '12px';
+    hintEl.style.padding = '8px';
+    hintEl.style.background = 'var(--background-modifier-form-field)';
+    hintEl.style.borderRadius = '4px';
+    hintEl.innerHTML = `<strong>首次使用前：</strong>需要在终端执行一次微信重签名，否则无法自动提取密钥：<br>
+<code>sudo codesign --force --deep --sign - /Applications/WeChat.app</code><br>
+然后重启微信。此操作不影响微信正常使用。`;
 
     // Decrypt mode
     new Setting(containerEl)
