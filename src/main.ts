@@ -35,8 +35,25 @@ export default class OWHPlugin extends Plugin {
       name: 'Generate WeChat Briefing',
       callback: async () => {
         try {
-          // Auto-decrypt if configured
-          if (this.settings.decryptMode === 'auto' && this.settings.decryptKeyHex) {
+          // Auto-detect decrypted DB directory if not configured
+          if (!this.settings.decryptedDbDir) {
+            const defaultDir = join(process.env.HOME || '', '.wechat-hub', 'decrypted');
+            if (existsSync(join(defaultDir, 'contact.db'))) {
+              this.settings.decryptedDbDir = defaultDir;
+              await this.saveSettings();
+              new Notice(`OWH: 已自动检测到解密数据库: ${defaultDir}`);
+            }
+          }
+
+          const dbDir = this.settings.decryptedDbDir;
+          const hasDecryptedDb = dbDir && existsSync(join(dbDir, 'contact.db'));
+
+          if (!hasDecryptedDb) {
+            new Notice('OWH: 未找到解密数据库。请先在终端运行：\ncd ~/wechat-decrypt && python3 decrypt_db.py', 8000);
+            return;
+          }
+
+          if (this.settings.decryptMode === 'auto') {
             new Notice('OWH: 正在解密最新数据...');
             await this.decryptDatabases();
           }
