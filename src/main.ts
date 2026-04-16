@@ -38,7 +38,7 @@ export default class OWHPlugin extends Plugin {
           // Auto-detect decrypted DB directory if not configured
           if (!this.settings.decryptedDbDir) {
             const defaultDir = join(process.env.HOME || '', '.wechat-hub', 'decrypted');
-            if (existsSync(join(defaultDir, 'contact.db'))) {
+            if (existsSync(join(defaultDir, 'contact', 'contact.db'))) {
               this.settings.decryptedDbDir = defaultDir;
               await this.saveSettings();
               new Notice(`OWH: 已自动检测到解密数据库: ${defaultDir}`);
@@ -46,7 +46,7 @@ export default class OWHPlugin extends Plugin {
           }
 
           const dbDir = this.settings.decryptedDbDir;
-          const hasDecryptedDb = dbDir && existsSync(join(dbDir, 'contact.db'));
+          const hasDecryptedDb = dbDir && existsSync(join(dbDir, 'contact', 'contact.db'));
 
           if (!hasDecryptedDb) {
             new Notice('OWH: 未找到解密数据库。请先在终端运行：\ncd ~/wechat-decrypt && python3 decrypt_db.py', 8000);
@@ -112,20 +112,20 @@ export default class OWHPlugin extends Plugin {
             return;
           }
 
-          const contactPath = join(dir, 'contact.db');
+          const contactPath = join(dir, 'contact', 'contact.db');
           const contactData = readFileSync(contactPath);
           const contactDb = this.dbConnector.loadFromBytes(new Uint8Array(contactData));
           const contactReader = new ContactReader(contactDb);
           const contactCount = contactReader.count();
 
           // Find all message DBs
-          const { readdirSync } = await import('fs');
-          const files = readdirSync(dir);
-          const msgFiles = files.filter(f => f.startsWith('message_') && f.endsWith('.db'));
+          const msgDirPath = join(dir, 'message');
+          const files = readdirSync(msgDirPath);
+          const msgFiles = files.filter((f: string) => f.startsWith('message_') && f.endsWith('.db') && !f.includes('fts') && !f.includes('resource'));
 
           const tableSummaries: string[] = [];
           for (const file of msgFiles.slice(0, 5)) {
-            const msgPath = join(dir, file);
+            const msgPath = join(msgDirPath, file);
             const msgData = readFileSync(msgPath);
             const msgDb = this.dbConnector.loadFromBytes(new Uint8Array(msgData));
             const msgReader = new MessageReader(msgDb);
@@ -346,8 +346,11 @@ export default class OWHPlugin extends Plugin {
     const dir = this.settings.decryptedDbDir;
     if (!dir) throw new Error('No DB directory configured.');
 
-    // Load contacts
-    const contactPath = join(dir, 'contact.db');
+    // Load contacts (in contact/ subdirectory)
+    const contactPath = join(dir, 'contact', 'contact.db');
+    if (!existsSync(contactPath)) {
+      throw new Error(`contact.db not found at ${contactPath}`);
+    }
     const contactData = readFileSync(contactPath);
     const contactDb = this.dbConnector.loadFromBytes(new Uint8Array(contactData));
     const contactReader = new ContactReader(contactDb);
@@ -355,15 +358,18 @@ export default class OWHPlugin extends Plugin {
     // Time range cutoff
     const since = new Date(Date.now() - this.settings.briefingTimeRangeHours * 3600 * 1000);
 
-    // Find all message DBs
-    const { readdirSync } = await import('fs');
-    const files = readdirSync(dir);
-    const msgFiles = files.filter(f => f.startsWith('message_') && f.endsWith('.db'));
+    // Find all message DBs (in message/ subdirectory)
+    const msgDir = join(dir, 'message');
+    if (!existsSync(msgDir)) {
+      throw new Error(`message directory not found at ${msgDir}`);
+    }
+    const files = readdirSync(msgDir);
+    const msgFiles = files.filter((f: string) => f.startsWith('message_') && f.endsWith('.db') && !f.includes('fts') && !f.includes('resource'));
 
     const allMessages: ParsedMessage[] = [];
 
     for (const file of msgFiles) {
-      const msgPath = join(dir, file);
+      const msgPath = join(msgDir, file);
       const msgData = readFileSync(msgPath);
       const msgDb = this.dbConnector.loadFromBytes(new Uint8Array(msgData));
       const msgReader = new MessageReader(msgDb);
