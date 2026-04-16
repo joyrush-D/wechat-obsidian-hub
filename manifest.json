@@ -1,0 +1,9 @@
+{
+  "id": "wechat-obsidian-hub",
+  "name": "WeChat Obsidian Hub",
+  "version": "0.1.0",
+  "minAppVersion": "1.0.0",
+  "description": "AI-powered WeChat message briefing in Obsidian",
+  "author": "joyrush",
+  "isDesktopOnly": true
+}
