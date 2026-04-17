@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.2.0] - 2026-04-17
+
+### Added
+- **IdentityResolver** — system-wide authoritative person index
+  - Indexes every wxid with ALL its aliases (contact, nickName, remark, per-group nicknames)
+  - For current user: discovers up to 25 per-group aliases (e.g., "罗俊", "广和通-罗俊", "罗舒扬爸爸", "Dexter-GCC运营商")
+  - Applied in: message parsing, Pattern of Life, @mention scan, Source Trust, Group Dossier
+- **Lazy Group Dossier** — `[[WeChat-Groups/群名]]` wikilinks in briefings auto-populate on first click
+  - 7-day activity with ASCII bar chart
+  - Top 10 speakers, all shared links, last 100 raw messages
+  - No pre-generation — vault stays clean
+- **Direct Synthesis mode** — single-pass briefing avoids cascaded summarization info loss
+  - Previously: extract→cluster→synthesize (3 LLM calls, each lossy)
+  - Now: one LLM call on raw messages with full context (requires 100K+ context model)
+
+### Fixed
+- **@ mention detection** — was only searching wxid alias ("joyrush"), missed all other identities
+- **Group names showed as MD5 hash** — now resolved back to real display names via hash→wxid reverse index
+- **Time cutoff** — "24 hours" now means "since local midnight today" (not rolling 24h window)
+- **Pattern of Life duplicates** — same person under different group nicknames no longer split
+- **Pattern of Life filter** — 3-char minimum (was 10) recovered messages like "你这是什么时候的"
+- **Clustering fabrications** — strict rules against grouping unrelated items (e.g., "差旅" + "稳定币")
+- **Reflexive Control false positives** — conservative defaults, no paranoid conspiracy theories
+- **Stale extraction cache** — now refreshes when conversation has new messages
+- **Source trust cold start** — bootstrap from contact attributes (remark > B, DM > B)
+
+### Changed
+- Briefing structure (boss-optimized top-down):
+  1. 30-second Tearline
+  2. 📍 Direct @ you (mechanical scan, never cached)
+  3. Main PDB brief (BLUF / @mentions / Today's News / Key Judgments / Tenth Man / Watch / Resources)
+  4. 👥 Pattern of Life (mechanical list of ALL remarked contacts + LLM deep analysis)
+  5. Optional: Reflexive Control, Bias Audit, Shareable Tearline (all off by default)
+
+### Privacy
+- Verified no keys/chats/contacts leaked to public repo
+- `docs/superpowers/` (internal design docs) excluded from git
+- `all_keys.json`, `data.json`, `WeChat-Briefings/`, `*.db` all gitignored
+
 ## [0.1.0] - 2026-04-17 (Initial Release)
 
 ### Added

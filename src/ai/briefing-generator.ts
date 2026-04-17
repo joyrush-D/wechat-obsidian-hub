@@ -261,7 +261,7 @@ export class BriefingGenerator {
     mentions.sort((a, b) => b.msg.time.getTime() - a.msg.time.getTime());
 
     const lines: string[] = [
-      `## 📍 直接 @ 你的消息（${mentions.length} 条，机械扫描，覆盖身份: ${identities.join(' / ')}）`,
+      `## 📍 直接 @ 你的消息（${mentions.length} 条）`,
       '',
     ];
     for (const { msg, reason } of mentions.slice(0, 30)) {
@@ -725,8 +725,15 @@ export class BriefingGenerator {
     date: string,
     onProgress: (content: string, done: boolean) => Promise<void>,
   ): Promise<string> {
-    if (this.options.contactsMap) {
-      updateTrust(this.trust, messages, this.options.contactsMap, this.options.userWxid);
+    if (this.options.contactsMap || this.options.identityResolver) {
+      updateTrust(
+        this.trust,
+        messages,
+        this.options.contactsMap || new Map(),
+        this.options.userWxid,
+        this.options.identityResolver,
+        this.options.userIdentities,
+      );
     }
 
     // Stage 1: triage

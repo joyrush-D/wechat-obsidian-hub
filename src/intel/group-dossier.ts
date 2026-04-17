@@ -8,6 +8,7 @@ import type { ContactReader } from '../db/contact-reader';
 import type { MessageReader } from '../db/message-reader';
 import type { ParsedMessage, Contact } from '../types';
 import { parseMessage } from '../parser/index';
+import type { IdentityResolver } from './identity-resolver';
 
 export interface GroupDossierInput {
   groupWxid: string;           // real wxid like "58263875481@chatroom"
@@ -16,6 +17,7 @@ export interface GroupDossierInput {
   messageReader: MessageReader;
   daysBack?: number;           // how many days of messages to include
   userIdentities?: string[];   // to detect @ mentions to user
+  identityResolver?: IdentityResolver;  // canonical person names
 }
 
 /**
@@ -23,7 +25,7 @@ export interface GroupDossierInput {
  * Mechanical summary + selected real messages, no LLM.
  */
 export function buildGroupDossier(input: GroupDossierInput): string {
-  const { groupWxid, groupName, contactReader, messageReader, userIdentities = [] } = input;
+  const { groupWxid, groupName, contactReader, messageReader, userIdentities = [], identityResolver } = input;
   const daysBack = input.daysBack ?? 7;
 
   const since = new Date(Date.now() - daysBack * 24 * 3600 * 1000);
@@ -51,8 +53,15 @@ export function buildGroupDossier(input: GroupDossierInput): string {
     if (!senderWxid || /^\d+$/.test(senderWxid)) {
       senderWxid = messageReader.resolveSenderId(raw.real_sender_id);
     }
-    const senderContact = contactReader.getContact(senderWxid);
-    const senderName = senderContact?.remark || senderContact?.nickName || senderWxid;
+    // Canonical name from resolver (same person across groups → same display name)
+    let senderName: string;
+    if (identityResolver) {
+      const ident = identityResolver.get(senderWxid);
+      senderName = ident?.primaryName || senderWxid;
+    } else {
+      const senderContact = contactReader.getContact(senderWxid);
+      senderName = senderContact?.remark || senderContact?.nickName || senderWxid;
+    }
     parsed.push({
       localId: raw.local_id,
       time: new Date(raw.create_time * 1000),
@@ -77,9 +86,17 @@ export function buildGroupDossier(input: GroupDossierInput): string {
 
   const links: ParsedMessage[] = parsed.filter(m => m.type === 'link' && m.extra.url && m.extra.unsupported !== '1');
 
-  // @user mentions in this group
+  // @user mentions in this group (all user identities considered)
+  const selfWxids = new Set<string>();
+  if (identityResolver && userIdentities.length > 0) {
+    for (const id of userIdentities) {
+      const found = identityResolver.findByName(id);
+      if (found) selfWxids.add(found.wxid);
+    }
+  }
   const userMentions = parsed.filter(m => {
     if (userIdentities.length === 0) return false;
+    if (selfWxids.has(m.senderWxid)) return false;  // skip user's own messages
     const t = m.text.toLowerCase();
     return userIdentities.some(id => id && id.length >= 2 && t.includes(`@${id.toLowerCase()}`));
   });

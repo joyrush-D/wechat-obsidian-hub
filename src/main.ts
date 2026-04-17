@@ -417,6 +417,8 @@ export default class OWHPlugin extends Plugin {
       const hash = createHash('md5').update(groupWxid).digest('hex');
       const tables = msgReader.getConversationTables();
       if (tables.includes(`Msg_${hash}`)) {
+        // Build resolver on-demand if not already built
+        const resolver = this.identityResolver ?? new IdentityResolver(contactReader);
         content = buildGroupDossier({
           groupWxid,
           groupName: displayName,
@@ -424,6 +426,7 @@ export default class OWHPlugin extends Plugin {
           messageReader: msgReader,
           daysBack: 7,
           userIdentities,
+          identityResolver: resolver,
         });
         msgDb.close();
         break;

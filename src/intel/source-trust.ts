@@ -149,53 +149,72 @@ export function formatAdmiraltyCodeShort(reliability: SourceReliability, credibi
 /**
  * Update source stats from a batch of messages from today.
  * Modifies trust data in-place.
+ * If IdentityResolver is supplied, uses canonical wxid + displayName.
  */
 export function updateTrust(
   trust: SourceTrustData,
   messages: ParsedMessage[],
   contacts: Map<string, Contact>,
   userWxid: string = '',
+  identityResolver?: { get: (wxid: string) => { wxid: string; primaryName: string; hasRemark: boolean; allNames: Set<string> } | null; findByName: (name: string) => { wxid: string; allNames: Set<string> } | null },
+  userIdentities: string[] = [],
 ): SourceTrustData {
   const today = new Date().toISOString().slice(0, 10);
 
-  // Group messages by sender for batch update
+  // Group messages by CANONICAL wxid (from resolver if available)
   const bySpeaker = new Map<string, ParsedMessage[]>();
   for (const msg of messages) {
     if (!msg.senderWxid) continue;
-    if (!bySpeaker.has(msg.senderWxid)) bySpeaker.set(msg.senderWxid, []);
-    bySpeaker.get(msg.senderWxid)!.push(msg);
+    // Trust uses wxid as authoritative key; resolver already normalizes via buildIdentity
+    const key = msg.senderWxid;
+    if (!bySpeaker.has(key)) bySpeaker.set(key, []);
+    bySpeaker.get(key)!.push(msg);
   }
 
   for (const [wxid, msgs] of bySpeaker) {
-    const contact = contacts.get(wxid);
-    const existing = trust.sources[wxid];
+    // Canonical display name
+    let displayName: string;
+    let hasRemark: boolean;
+    if (identityResolver) {
+      const ident = identityResolver.get(wxid);
+      displayName = ident?.primaryName || wxid;
+      hasRemark = ident?.hasRemark || false;
+    } else {
+      const contact = contacts.get(wxid);
+      displayName = contact?.remark || contact?.nickName || wxid;
+      hasRemark = !!contact?.remark;
+    }
 
+    const existing = trust.sources[wxid];
     const isInDirectMsg = msgs.some(m => m.conversationId === wxid);
-    const mentionsUser = userWxid
-      ? msgs.filter(m => m.text.includes(`@${userWxid}`)).length
+    // Count mentions of user: try ALL user aliases (not just userWxid)
+    const userIdsLC = userIdentities.length > 0
+      ? userIdentities.map(i => i.toLowerCase())
+      : userWxid ? [userWxid.toLowerCase()] : [];
+    const mentionsUser = userIdsLC.length > 0
+      ? msgs.filter(m => userIdsLC.some(id => m.text.toLowerCase().includes(`@${id}`))).length
       : 0;
     const sharedLinks = msgs.filter(m => m.type === 'link').length;
 
     if (existing) {
-      // Increment stats
       existing.totalMessages += msgs.length;
-      existing.recentMessages = msgs.length;  // reset to today's count
+      existing.recentMessages = msgs.length;
       existing.mentionsUser += mentionsUser;
       existing.sharedLinks += sharedLinks;
       existing.lastSeen = today;
       if (existing.firstSeen !== today && !existing.daysObserved) existing.daysObserved = 1;
       if (existing.lastSeen !== today) existing.daysObserved += 1;
       existing.isInDirectMsg = existing.isInDirectMsg || isInDirectMsg;
-      existing.hasRemark = !!contact?.remark;
-      existing.displayName = contact?.remark || contact?.nickName || wxid;
+      existing.hasRemark = hasRemark;
+      existing.displayName = displayName;
     } else {
       trust.sources[wxid] = {
         wxid,
-        displayName: contact?.remark || contact?.nickName || wxid,
+        displayName,
         totalMessages: msgs.length,
         recentMessages: msgs.length,
         daysObserved: 1,
-        hasRemark: !!contact?.remark,
+        hasRemark,
         isInDirectMsg,
         mentionsUser,
         sharedLinks,
