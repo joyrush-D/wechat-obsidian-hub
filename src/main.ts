@@ -128,7 +128,7 @@ export default class OWHPlugin extends Plugin {
           // Find all message DBs
           const msgDirPath = join(dir, 'message');
           const files = readdirSync(msgDirPath);
-          const msgFiles = files.filter((f: string) => f.startsWith('message_') && f.endsWith('.db') && !f.includes('fts') && !f.includes('resource'));
+          const msgFiles = files.filter((f: string) => f.endsWith('.db') && (f.startsWith('message_') || f.startsWith('biz_message_')) && !f.includes('fts') && !f.includes('resource'));
 
           const tableSummaries: string[] = [];
           for (const file of msgFiles.slice(0, 5)) {
@@ -371,7 +371,7 @@ export default class OWHPlugin extends Plugin {
       throw new Error(`message directory not found at ${msgDir}`);
     }
     const files = readdirSync(msgDir);
-    const msgFiles = files.filter((f: string) => f.startsWith('message_') && f.endsWith('.db') && !f.includes('fts') && !f.includes('resource'));
+    const msgFiles = files.filter((f: string) => f.endsWith('.db') && (f.startsWith('message_') || f.startsWith('biz_message_')) && !f.includes('fts') && !f.includes('resource'));
 
     const allMessages: ParsedMessage[] = [];
 

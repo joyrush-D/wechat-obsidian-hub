@@ -1,80 +1,122 @@
 /**
- * Briefing prompt template inspired by US Intelligence Community (IC) analytic standards:
- * - BLUF (Bottom Line Up Front): lead with the most important conclusion
- * - Key Judgments with confidence levels (high/moderate/low)
- * - Indicators & Warnings: things to watch
- * - Action Items: what the reader should do
- * - Source quality assessment
+ * Briefing prompts modeled after the CIA's President's Daily Brief (PDB) format
+ * and ICD 203 analytic standards. Includes:
  *
- * Reference: ICD 203 (Analytic Standards), DIA briefing format, NSA SIGINT reports
+ * - BLUF (Bottom Line Up Front)
+ * - NATO Admiralty Code source notation (B2 = usually reliable + probably true)
+ * - Sherman Kent estimative language (high confidence / moderate / low)
+ * - "What's New / Why It Matters / What to Watch" structure
+ * - Coordinated dissent (alternative interpretations)
  */
 
-export function buildBriefingPrompt(date: string, messagesText: string): string {
-  return `你是一名情报分析师，按照美军/情报界的标准格式（ICD 203 / BLUF）为用户分析今日微信消息。
+/**
+ * Stage 2: per-conversation entity extraction.
+ * Output is structured (not prose) so we can re-cluster across conversations.
+ */
+export function buildExtractionPrompt(conversationName: string, messages: string): string {
+  return `你是情报分析员。从以下"${conversationName}"对话中提取结构化要点。
+不要总结全文，提取下列信号：
 
-## 输出格式（严格遵循）
+输出严格 Markdown 格式：
 
-### 📌 核心要点（BLUF — Bottom Line Up Front）
-用 1-2 句话给出今日最关键的判断或最值得用户立即关注的事项。
+### 话题
+- [话题名称]: 一句话描述
+- (列出本对话主要讨论的 1-5 个话题)
 
-### 🎯 关键判断（Key Judgments）
-按重要性排序，每条包含：
-- **判断**：明确陈述
-- **依据**：来自哪个对话、谁说的、何时
-- **置信度**：高 / 中 / 低（基于消息数量、来源可信度、是否有交叉验证）
+### 决策与判断
+- [发言人 / 信源等级]: 提出的具体观点或决策
 
-### ⚠️ 警示与异常（Indicators & Warnings）
-需要警惕的信号——异常活跃的对话、敏感话题、潜在冲突、需要快速回复的请求等。
+### @ 我的内容
+- [发言人]: 直接 @ 用户或需要用户回应的消息
 
-### ✅ 行动项（Action Items）
-用户今天/明天应该采取的具体行动，按优先级排序：
-- 🔴 紧急（24小时内）
-- 🟡 重要（本周内）
-- 🟢 可选（有空时）
+### 行动项
+- [发言人]: 需要做某事 / 待办事项
 
-### 💡 趋势与洞察（Trends & Insights）
-跨对话发现的模式：同一话题在多个群讨论、某个人在多处出现、行业动态、技术热点。
+### 资源
+- [发言人]: 链接标题 / 文件名
 
-### 🔗 重要资源（Key Resources）
-今日分享的有价值链接、文章、文件，按主题归类。
+### 实体
+- 人物: 提及的关键人物
+- 组织/产品: 公司、品牌、产品名
+- 数字: 重要数字（成本、日期、指标）
 
-### 📊 元数据
-- 总消息数 / 活跃对话数 / 最活跃发言人前3
-- 数据日期：${date}
+如果某个段落没有内容，写"- 无"。
+仅提取，不评论。中文输出。
 
----
-
-## 分析原则
-1. **BLUF 优先**：最重要的结论放最前面，不要从背景讲起
-2. **量化判断**：使用"高/中/低"置信度，避免模糊措辞
-3. **避免冗余**：不重复消息原文，只提炼判断和洞察
-4. **跳过噪音**：寒暄、表情、闲聊不进入简报
-5. **关注用户**：标注哪些消息直接@用户、需要回复
-
-## 今日消息（${date}）
-
-${messagesText}
-
-请按照上述格式生成简报。中文输出。`;
+对话内容：
+${messages}`;
 }
 
 /**
- * Per-batch summary prompt (used in progressive generation).
- * Focuses each batch on extracting structured findings.
+ * Stage 5: PDB-style synthesis from clustered intel.
+ * Input is the consolidated structured findings, output is the boss-ready brief.
  */
-export function buildBatchPrompt(batchText: string): string {
-  return `你是情报分析师。从以下对话提取要点，输出结构化笔记：
+export function buildPdbSynthesisPrompt(
+  date: string,
+  topSources: string,
+  clusteredFindings: string,
+  metaStats: string,
+): string {
+  return `你是情报分析员，正在为决策者（"领导"，即用户）撰写每日简报。
+严格按照 CIA PDB（总统每日简报）格式输出。
 
-每个对话用 "### 对话名" 开头，列出：
-- **主要议题**：用户在讨论什么（不超过3点）
-- **关键判断**：值得关注的结论或观点（含发言者）
-- **行动项**：需要回复或跟进的事项（标注紧急程度）
-- **资源**：分享的链接/文件（含标题）
+# 写作纪律（ICD 203 标准）
 
-跳过：纯寒暄、表情、无信息量的回复。
-中文输出。
+1. **BLUF（结论前置）**：每个段落第一句话给结论，不要从背景写起
+2. **使用估测性词汇**（精确表达置信度）：
+   - "几乎肯定"(95%+) / "高度可能"(80-95%) / "可能"(55-80%) / "五五开"(45-55%) / "不太可能"(20-45%) / "极不可能"(5-20%)
+3. **NATO Admiralty Code 标注信源**（已在输入中给出，格式 B2 = 通常可信源 + 可能为真）
+4. **区分"事实"与"判断"**：用 💬 标注引用，🧠 标注分析员判断
+5. **包含异见/替代解读**（如果有不同观点）
+6. **指出待观察信号**（What to Watch）
 
-对话内容：
+# 信源信任度（用作判断权重）
+${topSources}
 
-${batchText}`;
+# 元数据
+${metaStats}
+
+# 已聚类的情报输入
+${clusteredFindings}
+
+---
+
+# 输出格式（严格遵守）
+
+# 微信日报 — ${date}
+
+## 🎯 BLUF（30秒概要）
+**领导今天必须知道的 1-3 件事，每条 1 句话，按重要性排序。**
+
+## ⚡ 直接关乎领导（@Mentions / Action Required）
+- **[紧急度: 🔴/🟡/🟢] [信源 B2]** 描述...
+- (如果没有，写"今日无直接 @ 你的事项")
+
+## 📰 What's New（今日核心动态）
+按主题归类（不按对话），每个主题：
+### [主题名]
+**核心判断**: 一句话结论 [置信度]
+💬 **关键引用**: "..." — 发言人 [信源等级]
+🧠 **分析**: 为什么这件事值得关注
+**异见**: 如有不同看法...
+
+## 🧠 关键判断（Key Judgments）
+3-5 条跨主题的核心判断，每条带置信度：
+1. **[高度可能]** ...（依据：3 个独立信源）
+2. **[可能]** ...
+
+## 🔍 What to Watch（明日关注信号）
+- 信号 1: 如果 X 发生，意味着...
+- 信号 2: ...
+
+## 🔗 资源附录
+按主题归类的链接和文件：
+- **主题**: [标题](URL) — 来源 [信源等级]
+
+## 📊 元数据
+${metaStats}
+
+---
+
+请严格按照上述格式生成简报。中文输出。聚焦于决策价值，避免冗长复述。`;
 }
