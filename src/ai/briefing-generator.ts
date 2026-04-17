@@ -250,6 +250,72 @@ export class BriefingGenerator {
   }
 
   /**
+   * Mechanical Pattern of Life — lists EVERY contact with a remark + top-N active,
+   * regardless of whether their content is "interesting" to LLM.
+   * Ensures user can answer "did X message today?" at a glance.
+   */
+  buildMechanicalPatternOfLife(messages: ParsedMessage[]): string {
+    const contactsMap = this.options.contactsMap || new Map();
+    const bySpeaker = new Map<string, { msgs: ParsedMessage[]; displayName: string; hasRemark: boolean }>();
+
+    for (const msg of messages) {
+      if (!msg.senderWxid || msg.senderWxid === this.options.userWxid) continue;
+      if (msg.type === 'emoji' || msg.type === 'system') continue;
+      if (!bySpeaker.has(msg.senderWxid)) {
+        const contact = contactsMap.get(msg.senderWxid);
+        const display = contact?.remark || contact?.nickName || msg.sender || msg.senderWxid;
+        bySpeaker.set(msg.senderWxid, {
+          msgs: [],
+          displayName: display,
+          hasRemark: !!contact?.remark,
+        });
+      }
+      bySpeaker.get(msg.senderWxid)!.msgs.push(msg);
+    }
+
+    // Skip wxid_-only entries (no real name) to avoid noise
+    const named = [...bySpeaker.entries()].filter(([, info]) => {
+      return !/^wxid_[a-z0-9]+$/i.test(info.displayName);
+    });
+
+    // Everyone with a remark gets listed; plus top-N most active (even without remark)
+    const withRemark = named.filter(([, info]) => info.hasRemark);
+    const withoutRemark = named
+      .filter(([, info]) => !info.hasRemark)
+      .sort((a, b) => b[1].msgs.length - a[1].msgs.length)
+      .slice(0, 8);
+
+    const combined = [...withRemark, ...withoutRemark].sort((a, b) => {
+      // remarked first, then by msg count
+      const scoreA = (a[1].hasRemark ? 1000 : 0) + a[1].msgs.length;
+      const scoreB = (b[1].hasRemark ? 1000 : 0) + b[1].msgs.length;
+      return scoreB - scoreA;
+    });
+
+    if (combined.length === 0) return '### 今日无有名联系人发言记录';
+
+    const lines: string[] = ['### 📋 今日有发言的重要联系人（机械完整列表）', ''];
+    for (const [, info] of combined) {
+      const msgs = info.msgs;
+      const conversations = new Set(msgs.map(m => m.conversationName));
+      const types = new Set(msgs.map(m => m.type));
+      const lastMsg = msgs[msgs.length - 1];
+      const lastTime = lastMsg.time.toTimeString().slice(0, 5);
+      const typesList = [...types].join('/');
+
+      // Pick one representative text message (longest meaningful text)
+      const textMsgs = msgs.filter(m => m.type === 'text' && m.text.length > 5);
+      const highlight = textMsgs.sort((a, b) => b.text.length - a.text.length)[0];
+      const sample = highlight ? `"${highlight.text.slice(0, 80).replace(/\n/g, ' ')}"` : '（纯多媒体/未提取文本）';
+
+      const remarkTag = info.hasRemark ? ' 📌' : '';
+      lines.push(`- **${info.displayName}${remarkTag}** — ${msgs.length} 条 · 跨 ${conversations.size} 个对话 · 最后 ${lastTime} · 类型: ${typesList}`);
+      lines.push(`  代表发言: ${sample}`);
+    }
+    return lines.join('\n');
+  }
+
+  /**
    * Build per-person daily data for Pattern of Life analysis.
    * Returns top 8 speakers (by message volume or trust grade), with their quotes across groups.
    */
@@ -696,14 +762,23 @@ export class BriefingGenerator {
 
     if (this.options.enablePatternOfLife) {
       await onProgress(header + `_👥 阶段 5: 重要人物画像_`, false);
+
+      // STEP 1: Mechanical listing — every remarked contact gets included, period.
+      const mechanicalSection = this.buildMechanicalPatternOfLife(messages);
+
+      // STEP 2: LLM deep analysis on top-3 most active (optional add-on)
       const perPersonData = this.buildPerPersonData(messages);
+      let llmDeepAnalysis = '';
       if (perPersonData) {
         try {
-          patternOfLife = await llmClient.complete(buildPatternOfLifePromptV2(perPersonData));
+          llmDeepAnalysis = await llmClient.complete(buildPatternOfLifePromptV2(perPersonData));
         } catch (e) {
-          console.error('Pattern of life failed:', e);
+          console.error('Pattern of life LLM failed:', e);
         }
       }
+
+      // Combine: mechanical list first (complete), then LLM deep analysis (focused)
+      patternOfLife = mechanicalSection + (llmDeepAnalysis ? '\n\n### 🔬 深度画像（AI 分析）\n\n' + llmDeepAnalysis : '');
     }
 
     if (this.options.enableBiasAudit) {
