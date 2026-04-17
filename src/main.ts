@@ -1,4 +1,4 @@
-import { Plugin, Notice } from 'obsidian';
+import { Plugin, Notice, Modal, App, Setting } from 'obsidian';
 import { readFileSync, existsSync, readdirSync, mkdirSync, copyFileSync } from 'fs';
 import { join } from 'path';
 import { execSync } from 'child_process';
@@ -11,6 +11,7 @@ import { parseMessage } from './parser/index';
 import { LlmClient } from './ai/llm-client';
 import { BriefingGenerator } from './ai/briefing-generator';
 import { ExtractionStore } from './intel/extraction-store';
+import { generateWeeklyRollup, generateTopicBrief, runACHAnalysis } from './intel/retrospective';
 import type { ParsedMessage } from './types';
 
 export default class OWHPlugin extends Plugin {
@@ -127,6 +128,94 @@ export default class OWHPlugin extends Plugin {
       },
     });
 
+    // Command: Generate Weekly Rollup
+    this.addCommand({
+      id: 'generate-weekly-rollup',
+      name: 'Generate Weekly Rollup (last 7 days)',
+      callback: async () => {
+        try {
+          const llmClient = new LlmClient(this.settings.aiEndpoint, this.settings.aiModel);
+          if (!(await llmClient.isAvailable())) {
+            new Notice('OWH: LM Studio 不可用');
+            return;
+          }
+          const store = new ExtractionStore(process.env.HOME || '');
+          new Notice('OWH: 正在生成周报...');
+          const brief = await generateWeeklyRollup(store, llmClient, 7);
+          const slug = `weekly-${new Date().toISOString().slice(0, 10)}`;
+          await this.saveBriefing(slug, brief);
+          new Notice(`OWH: 周报已生成 → ${this.settings.briefingFolder}/${slug}.md`, 6000);
+        } catch (err) {
+          console.error('OWH: weekly rollup failed', err);
+          new Notice(`OWH: Error — ${(err as Error).message}`);
+        }
+      },
+    });
+
+    // Command: Topic Brief (Target-Centric)
+    this.addCommand({
+      id: 'generate-topic-brief',
+      name: 'Generate Topic Brief (cross-time deep-dive)',
+      callback: async () => {
+        try {
+          // Use Obsidian's prompt to ask for keyword
+          const topic = await this.promptForInput('专题分析关键词', '例如：M9 成本 / 领克项目 / AI 编程');
+          if (!topic) return;
+          const days = await this.promptForInput('时间范围（天）', '默认 30', '30');
+          const daysNum = parseInt(days || '30', 10) || 30;
+
+          const llmClient = new LlmClient(this.settings.aiEndpoint, this.settings.aiModel);
+          if (!(await llmClient.isAvailable())) {
+            new Notice('OWH: LM Studio 不可用');
+            return;
+          }
+          const store = new ExtractionStore(process.env.HOME || '');
+          new Notice(`OWH: 正在生成"${topic}"专题简报 (过去 ${daysNum} 天)...`);
+          const brief = await generateTopicBrief(store, llmClient, topic, daysNum);
+          const safeName = topic.replace(/[\\/:*?"<>|]/g, '_').slice(0, 40);
+          const slug = `topic-${safeName}-${new Date().toISOString().slice(0, 10)}`;
+          await this.saveBriefing(slug, brief);
+          new Notice(`OWH: 专题简报已生成 → ${this.settings.briefingFolder}/${slug}.md`, 6000);
+        } catch (err) {
+          console.error('OWH: topic brief failed', err);
+          new Notice(`OWH: Error — ${(err as Error).message}`);
+        }
+      },
+    });
+
+    // Command: ACH Analysis
+    this.addCommand({
+      id: 'run-ach-analysis',
+      name: 'Run ACH Analysis (competing hypotheses)',
+      callback: async () => {
+        try {
+          const topic = await this.promptForInput(
+            'ACH 争议主题',
+            '例如：M9 制造成本到底是多少 / 京东 CEO 变动的真正原因',
+          );
+          if (!topic) return;
+          const days = await this.promptForInput('时间范围（天）', '默认 14', '14');
+          const daysNum = parseInt(days || '14', 10) || 14;
+
+          const llmClient = new LlmClient(this.settings.aiEndpoint, this.settings.aiModel);
+          if (!(await llmClient.isAvailable())) {
+            new Notice('OWH: LM Studio 不可用');
+            return;
+          }
+          const store = new ExtractionStore(process.env.HOME || '');
+          new Notice(`OWH: 正在对"${topic}"做 ACH 矩阵分析...`);
+          const brief = await runACHAnalysis(store, llmClient, topic, daysNum);
+          const safeName = topic.replace(/[\\/:*?"<>|]/g, '_').slice(0, 40);
+          const slug = `ach-${safeName}-${new Date().toISOString().slice(0, 10)}`;
+          await this.saveBriefing(slug, brief);
+          new Notice(`OWH: ACH 分析已生成 → ${this.settings.briefingFolder}/${slug}.md`, 6000);
+        } catch (err) {
+          console.error('OWH: ACH analysis failed', err);
+          new Notice(`OWH: Error — ${(err as Error).message}`);
+        }
+      },
+    });
+
     // Command: Test DB connection
     this.addCommand({
       id: 'test-db-connection',
@@ -181,6 +270,14 @@ export default class OWHPlugin extends Plugin {
 
   onunload() {
     console.log('OWH: WeChat Obsidian Hub unloaded');
+  }
+
+  /** Show a modal prompting for text input. Returns null if user cancels. */
+  private async promptForInput(title: string, placeholder: string, defaultValue: string = ''): Promise<string | null> {
+    return new Promise(resolve => {
+      const modal = new InputModal(this.app, title, placeholder, defaultValue, resolve);
+      modal.open();
+    });
   }
 
   /** Lazy-init the DB connector on first use */
@@ -543,5 +640,64 @@ export default class OWHPlugin extends Plugin {
     } else {
       await this.app.vault.create(filePath, header + content);
     }
+  }
+}
+
+/** Simple text-input modal. */
+class InputModal extends Modal {
+  private value: string;
+  private resolved = false;
+
+  constructor(
+    app: App,
+    private title: string,
+    private placeholder: string,
+    defaultValue: string,
+    private onResolve: (value: string | null) => void,
+  ) {
+    super(app);
+    this.value = defaultValue;
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl('h3', { text: this.title });
+
+    new Setting(contentEl)
+      .addText(text => {
+        text.setPlaceholder(this.placeholder).setValue(this.value);
+        text.onChange(v => { this.value = v; });
+        text.inputEl.style.width = '100%';
+        text.inputEl.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            this.confirm();
+          }
+        });
+        // Auto-focus
+        setTimeout(() => text.inputEl.focus(), 50);
+      });
+
+    new Setting(contentEl)
+      .addButton(btn => btn.setButtonText('确定').setCta().onClick(() => this.confirm()))
+      .addButton(btn => btn.setButtonText('取消').onClick(() => this.cancel()));
+  }
+
+  private confirm(): void {
+    this.resolved = true;
+    this.onResolve(this.value.trim() || null);
+    this.close();
+  }
+
+  private cancel(): void {
+    this.resolved = true;
+    this.onResolve(null);
+    this.close();
+  }
+
+  onClose(): void {
+    if (!this.resolved) this.onResolve(null);
+    this.contentEl.empty();
   }
 }

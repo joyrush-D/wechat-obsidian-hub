@@ -174,6 +174,161 @@ ${clusteredFindings}
 }
 
 /**
+ * Weekly Rollup: synthesize 7 days of extractions into cross-day patterns.
+ * Identifies recurring topics, active people, emerging trends.
+ */
+export function buildWeeklyRollupPrompt(dateRange: string, weeklyData: string): string {
+  return `你是周度情报分析员。下面是过去一周每天的抽取数据。
+
+【任务】生成一份周报，不是 7 份日报的堆砌，而是发现**跨日模式**。
+
+【重点识别】
+1. **持续话题**：同一话题在多天出现 — 是上升趋势还是余烬？
+2. **活跃人物动态**：谁这周异常活跃 / 异常沉默？
+3. **决策与行动**：已达成的决策 vs 悬而未决的问题
+4. **跨日信号**：前几天的预兆今天兑现了吗？
+5. **未解问题**：一周前提出但仍悬而未决的事项
+
+【输出格式】
+# 微信周报 ${dateRange}
+
+## 🎯 本周 BLUF（3 句话）
+领导本周必须知道的最关键 3 件事。
+
+## 📈 持续趋势（多天出现的话题）
+### [话题名]
+- **时间线**：第1天 → 第3天 → 本周末（简述演进）
+- **核心判断**：[置信度]
+- **当前状态**：进展/停滞/升级/降级
+
+## 👥 本周重要人物
+### [人名]
+- **活跃度**：本周跨 N 天 M 条消息
+- **主要主张**：用一句话概括
+- **异常**：是否与其平时模式不同
+
+## ✅ 已完成（本周闭环）
+- 本周达成的决策或已处理的问题
+
+## ⏳ 悬而未决（需你跟进）
+- 本周提出但未完成的关键事项
+
+## 🔮 下周关注信号
+- 本周埋下的伏笔/预兆
+
+## 📊 元数据
+${dateRange}
+
+请只输出上述结构，中文。不要前言。
+
+本周数据:
+${weeklyData}`;
+}
+
+/**
+ * Topic Brief (Target-Centric): cross-time analysis of a specific topic.
+ * Filters historical extractions by keyword, assembles timeline narrative.
+ */
+export function buildTopicBriefPrompt(topic: string, dateRange: string, filteredData: string): string {
+  return `你是专题情报分析员。针对主题"${topic}"，分析 ${dateRange} 内的相关讨论。
+
+【任务】不是把消息堆在一起，而是**按时间线重构事件演进**。
+
+【输出格式】
+# 专题简报: ${topic}
+
+## 🎯 核心判断（BLUF）
+关于"${topic}"目前的状况，一句话 [置信度]。
+
+## 📅 时间线
+按日期列出关键节点：
+### YYYY-MM-DD
+- **事件**：发生了什么
+- **关键发言**：[人名] 说"..."
+- **影响**：对话题走向的影响
+
+## 👥 主要参与者
+- **[人名]**：立场/观点概述
+- **[人名]**：立场/观点概述
+
+## 🔍 分歧与共识
+- **共识点**：大家都同意什么
+- **分歧点**：争议在哪里（如明显有争议，建议运行 ACH 深挖）
+
+## 📌 待办事项
+- 与此主题相关的悬而未决的事
+
+## 🔗 相关资源
+- 链接按时间排序
+
+严格按格式输出，中文。不要前言后语。
+
+原始数据（已按主题过滤）:
+${filteredData}`;
+}
+
+/**
+ * ACH (Analysis of Competing Hypotheses) — Heuer's signature technique.
+ * Lays out competing hypotheses with evidence matrix.
+ */
+export function buildACHPrompt(topic: string, filteredData: string): string {
+  return `你是资深情报分析员，现在用 Heuer 的 ACH 方法分析"${topic}"这个有争议的话题。
+
+【ACH 核心步骤】
+1. 识别 2-4 个**竞争性假设**（不能只有 1 个）
+2. 列出关键证据
+3. 构建矩阵：每条证据对每个假设是支持(✓) / 反驳(✗) / 中性(?)
+4. 计算每个假设的"反驳分数"（反驳越少越可信）
+5. 得出最可能的假设 + 置信度
+
+【重要原则】
+- 不要只选一个假设找证据支持（确认偏差）
+- 要找能**反驳每个假设**的证据
+- 假设必须**互斥** — 如果 H1 成立 H2 就不成立
+- 诚实标注"证据不足"的地方
+
+【输出格式】
+# ACH 分析: ${topic}
+
+## 🎯 最终判断
+**最可能的假设**: H[x] [置信度]
+**置信度理由**: 主要是因为反驳证据最少
+
+## 📋 竞争性假设
+- **H1**: 假设描述
+- **H2**: 假设描述
+- **H3**: 假设描述（可选）
+
+## 🧱 关键证据
+- **E1**: 证据 1 的描述 — 来源: [人名/对话]
+- **E2**: 证据 2 的描述
+- **E3**: ...
+
+## 📊 证据矩阵
+
+| 证据 | H1 | H2 | H3 |
+|------|----|----|----|
+| E1 | ✓/✗/? | ✓/✗/? | ✓/✗/? |
+| E2 | ... | ... | ... |
+| ... | ... | ... | ... |
+| **反驳次数** | N | N | N |
+
+## 💡 关键观察
+- 哪个假设反驳最多？
+- 哪条证据最具决定性？
+- 有哪些**必要证据仍然缺失**？
+
+## 🔍 验证路径
+- 要进一步确认判断，应该收集什么证据？
+- 向谁求证？
+
+严格按上述格式输出。矩阵必须真的画表格。中文。
+
+待分析材料:
+${filteredData}`;
+}
+
+/**
  * Pattern of Life: per-person daily summary across conversations.
  * For 5-10 most important people, show what they said today across all groups.
  */
