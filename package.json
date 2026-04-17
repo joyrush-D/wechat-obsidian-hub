@@ -1,6 +1,6 @@
 {
   "name": "wechat-obsidian-hub",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "WeChat Obsidian Hub plugin",
   "main": "main.js",
   "scripts": {
