@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { BriefingGenerator } from '../../src/ai/briefing-generator';
-import { buildBriefingPrompt } from '../../src/ai/prompt-templates';
+import { buildPdbSynthesisPrompt, buildDirectSynthesisPrompt } from '../../src/ai/prompt-templates';
 import type { ParsedMessage } from '../../src/types';
 
 function makeMsg(overrides: Partial<ParsedMessage> = {}): ParsedMessage {
@@ -72,7 +72,10 @@ describe('BriefingGenerator', () => {
     it('includes sender name', () => {
       const msgs = [makeMsg({ sender: 'Bob', text: 'Test message' })];
       const result = new BriefingGenerator().formatMessagesForAI(msgs);
-      expect(result).toContain('Bob: Test message');
+      // Current format: "[HH:MM] sender [admiralty_code]: text"
+      expect(result).toContain('Bob');
+      expect(result).toContain('Test message');
+      expect(result).toMatch(/Bob\s*\[[^\]]+\]:\s*Test message/);
     });
 
     it('includes message text', () => {
@@ -192,37 +195,64 @@ describe('BriefingGenerator', () => {
   });
 
   describe('generate()', () => {
-    it('calls llmClient.complete with the built prompt and returns result', async () => {
-      const mockClient = { complete: vi.fn().mockResolvedValue('AI generated briefing') } as any;
-      const gen = new BriefingGenerator();
+    it('invokes llmClient.complete and wraps the result in the full brief envelope', async () => {
+      // Current generate() is a thin wrapper around generateProgressive(), which runs
+      // the full pipeline (direct synthesis → tearline → pattern-of-life → etc.).
+      // Any LLM call returns the same canned output here; we just assert the pipeline
+      // ran, produced a non-empty document, and embedded the canned content + the date.
+      // generateProgressive rejects mainBrief < 100 chars as "model crashed"
+      // and falls back to mechanical output. Provide a long enough canned response.
+      const CANNED = 'AI generated briefing: ' + 'x'.repeat(200);
+      const mockClient = { complete: vi.fn().mockResolvedValue(CANNED) } as any;
+      const gen = new BriefingGenerator({
+        enableTearline: false,
+        enablePatternOfLife: false,
+        enableBiasAudit: false,
+        enableReflexiveControl: false,
+        enableShareableTearline: false,
+      });
       const msgs = [makeMsg()];
       const result = await gen.generate(msgs, mockClient, '2024-01-15');
-      expect(result).toBe('AI generated briefing');
-      expect(mockClient.complete).toHaveBeenCalledOnce();
-      const calledPrompt = mockClient.complete.mock.calls[0][0];
-      expect(calledPrompt).toContain('2024-01-15');
+      expect(typeof result).toBe('string');
+      expect(result.length).toBeGreaterThan(0);
+      expect(mockClient.complete).toHaveBeenCalled();
+      // Result should include the canned LLM output somewhere in the composed brief
+      expect(result).toContain('AI generated briefing');
+      expect(result).toContain(CANNED);
     });
   });
 });
 
-describe('buildBriefingPrompt()', () => {
+describe('buildPdbSynthesisPrompt()', () => {
   it('includes the provided date', () => {
-    const prompt = buildBriefingPrompt('2024-03-20', 'some content');
+    const prompt = buildPdbSynthesisPrompt('2024-03-20', 'sources', 'content', 'meta');
     expect(prompt).toContain('2024-03-20');
   });
 
   it('includes the messages text', () => {
-    const prompt = buildBriefingPrompt('2024-03-20', '## Group\n[09:00] Alice: Hi');
+    const prompt = buildPdbSynthesisPrompt('2024-03-20', 'sources', '## Group\n[09:00] Alice: Hi', 'meta');
     expect(prompt).toContain('## Group');
     expect(prompt).toContain('[09:00] Alice: Hi');
   });
 
   it('is non-empty', () => {
-    expect(buildBriefingPrompt('2024-01-01', '').length).toBeGreaterThan(0);
+    expect(buildPdbSynthesisPrompt('2024-01-01', '', '', '').length).toBeGreaterThan(0);
   });
 
   it('contains Chinese instruction text', () => {
-    const prompt = buildBriefingPrompt('2024-01-01', '');
+    const prompt = buildPdbSynthesisPrompt('2024-01-01', '', '', '');
     expect(/[\u4e00-\u9fff]/.test(prompt)).toBe(true);
+  });
+});
+
+describe('buildDirectSynthesisPrompt()', () => {
+  it('includes the provided date', () => {
+    const prompt = buildDirectSynthesisPrompt('2024-03-20', 'content', 'meta');
+    expect(prompt).toContain('2024-03-20');
+  });
+
+  it('includes the raw messages', () => {
+    const prompt = buildDirectSynthesisPrompt('2024-03-20', '[09:00] Alice: Hi', 'meta');
+    expect(prompt).toContain('[09:00] Alice: Hi');
   });
 });

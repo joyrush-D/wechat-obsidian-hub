@@ -119,7 +119,7 @@ export function buildGroupDossier(input: GroupDossierInput): string {
   lines.push(`> **WXID**: \`${groupWxid}\`  `);
   lines.push(`> **分析范围**: 过去 ${daysBack} 天  `);
   lines.push(`> **消息总数**: ${parsed.length}  `);
-  lines.push(`> **活跃发言人数**: ${speakerCounts.size}  `);
+  lines.push(`> **活跃发言人数**: ${speakerStats.size}  `);
   lines.push(`> **📅 档案生成时间**: ${new Date().toLocaleString('zh-CN', { hour12: false }).replace(/\//g, '-')}  `);
   lines.push('');
   lines.push('---');

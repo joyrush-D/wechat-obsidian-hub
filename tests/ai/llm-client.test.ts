@@ -41,7 +41,7 @@ describe('LlmClient', () => {
       expect(body.messages[0].role).toBe('user');
       expect(body.messages[0].content).toBe('Say hello');
       expect(body.temperature).toBe(0.3);
-      expect(body.max_tokens).toBe(4096);
+      expect(body.max_tokens).toBe(8192);
     });
 
     it('returns the assistant reply text', async () => {
