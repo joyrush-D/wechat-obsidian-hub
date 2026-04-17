@@ -85,13 +85,39 @@ export default class OWHPlugin extends Plugin {
           const wechatDir = this.settings.wechatDataDir || this.detectWeChatDataDir() || '';
           const folderName = wechatDir.split('/').filter(Boolean).slice(-2, -1)[0] || '';
           const userAlias = folderName.replace(/_[a-f0-9]+$/, '');
-          console.log(`OWH: Detected user alias: ${userAlias}`);
+
+          // In WeChat groups people @ user by nickname/remark (e.g. "@Dexter"),
+          // not by wxid alias. Resolve all user identities from contact.db.
+          const userIdentities: string[] = [userAlias];
+          try {
+            const dbDir = this.settings.decryptedDbDir;
+            if (dbDir) {
+              const contactPath = join(dbDir, 'contact', 'contact.db');
+              if (existsSync(contactPath)) {
+                const cdb = this.dbConnector.loadFromBytes(new Uint8Array(readFileSync(contactPath)));
+                const res = cdb.exec(
+                  `SELECT username, nick_name, remark, alias FROM contact WHERE alias = '${userAlias.replace(/'/g, "''")}' OR username = '${userAlias.replace(/'/g, "''")}' LIMIT 1`
+                );
+                if (res.length > 0 && res[0].values.length > 0) {
+                  for (const v of res[0].values[0]) {
+                    if (v && typeof v === 'string' && v.trim()) userIdentities.push(v.trim());
+                  }
+                }
+                cdb.close();
+              }
+            }
+          } catch (e) {
+            console.error('OWH: Failed to resolve user identities:', e);
+          }
+          const userIdsList = [...new Set(userIdentities)].filter(Boolean);
+          console.log(`OWH: User identities for @ detection: ${userIdsList.join(', ')}`);
 
           const extractionStore = new ExtractionStore(process.env.HOME || '');
           const generator = new BriefingGenerator({
             skipEmoji: this.settings.skipEmoji,
             skipSystemMessages: this.settings.skipSystemMessages,
             userWxid: userAlias,
+            userIdentities: userIdsList,
             extractionStore,
           });
 

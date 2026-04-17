@@ -28,6 +28,7 @@ export interface BriefingOptions {
   trust?: SourceTrustData;
   contactsMap?: Map<string, Contact>;
   userWxid?: string;
+  userIdentities?: string[];  // all names user could be @'d by (wxid + nickname + remark + alias)
   enableTearline?: boolean;       // 30-sec ultra-condensed version
   enableShareableTearline?: boolean;  // desensitized team-shareable version
   enableBiasAudit?: boolean;      // Heuer's 18-bias check
@@ -194,44 +195,52 @@ export class BriefingGenerator {
   /**
    * Scan ALL messages for direct @ mentions to the user.
    * Not cached — always runs fresh on current data.
-   * Returns formatted section or empty string.
+   * Uses ALL user identities (wxid + nickname + remark + alias),
+   * because in WeChat groups, people @ by nickname not wxid.
    */
   scanUserMentions(messages: ParsedMessage[]): string {
     const userWxid = (this.options.userWxid || '').toLowerCase();
-    if (!userWxid) return '';
+    const identities = (this.options.userIdentities || (userWxid ? [userWxid] : []))
+      .filter(id => id && id.length >= 2)
+      .map(id => id.trim());
 
-    const contactsMap = this.options.contactsMap || new Map();
-    const mentions: Array<{ msg: ParsedMessage; reason: string }> = [];
+    if (identities.length === 0) return '';
 
-    // Collect possible user identifiers (wxid + nick + remark)
-    const userIdentifiers = new Set<string>([userWxid]);
-    const userContact = contactsMap.get(userWxid);
-    if (userContact?.nickName) userIdentifiers.add(userContact.nickName.toLowerCase());
-    if (userContact?.remark) userIdentifiers.add(userContact.remark.toLowerCase());
+    const mentions: Array<{ msg: ParsedMessage; reason: string; matchedId: string }> = [];
 
     for (const msg of messages) {
       if (msg.senderWxid === userWxid) continue;  // skip user's own messages
-      const textLower = msg.text.toLowerCase();
+      const text = msg.text;
 
-      // Direct @-mention check
+      // Direct @-mention check (WeChat uses various separators after @name:
+      // space, colon, newline, \u2005 mention-space, end-of-string)
       let matched = false;
       let reason = '';
-      for (const id of userIdentifiers) {
-        if (!id || id.length < 2) continue;
-        if (textLower.includes(`@${id}`)) {
-          matched = true;
-          reason = `明确 @ 了你 (${id})`;
-          break;
+      let matchedId = '';
+      for (const id of identities) {
+        if (!id) continue;
+        // Case-insensitive substring match for @<id>
+        const idx = text.toLowerCase().indexOf(`@${id.toLowerCase()}`);
+        if (idx >= 0) {
+          // Verify it's a real mention (followed by non-word boundary)
+          const afterIdx = idx + 1 + id.length;
+          const after = text[afterIdx] || ' ';
+          if (!/[a-zA-Z0-9_]/.test(after)) {
+            matched = true;
+            reason = `@${id}`;
+            matchedId = id;
+            break;
+          }
         }
       }
 
       // Direct message (1-on-1 with user as conversation)
-      if (!matched && msg.conversationId === userWxid) {
+      if (!matched && (msg.conversationId === userWxid || identities.includes(msg.conversationId))) {
         matched = true;
         reason = `私聊消息`;
       }
 
-      if (matched) mentions.push({ msg, reason });
+      if (matched) mentions.push({ msg, reason, matchedId });
     }
 
     if (mentions.length === 0) return '';
@@ -239,12 +248,12 @@ export class BriefingGenerator {
     // Sort by time desc (newest first)
     mentions.sort((a, b) => b.msg.time.getTime() - a.msg.time.getTime());
 
-    const lines: string[] = ['## 📍 直接 @ 你的消息（原始扫描，未经 AI 过滤）', ''];
-    for (const { msg, reason } of mentions.slice(0, 20)) {
+    const lines: string[] = [`## 📍 直接 @ 你的消息（机械扫描，覆盖所有身份: ${identities.join('/')}）`, ''];
+    for (const { msg, reason } of mentions.slice(0, 30)) {
       const time = msg.time.toTimeString().slice(0, 5);
       const sender = msg.sender || msg.senderWxid;
-      const text = msg.text.slice(0, 200).replace(/\n/g, ' ');
-      lines.push(`- **[${time}] ${sender}** 在 ${msg.conversationName} (${reason}): ${text}`);
+      const text = msg.text.slice(0, 250).replace(/\n/g, ' ');
+      lines.push(`- 🔴 **[${time}] ${sender}** 在 ${msg.conversationName} (${reason}): ${text}`);
     }
     return lines.join('\n');
   }
