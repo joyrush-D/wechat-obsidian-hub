@@ -236,6 +236,111 @@ export class OWHSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
+    // --- Section: Multimodal (v0.3.0) ---
+    containerEl.createEl('h3', { text: '多模态处理（语音 / 图片）' });
+
+    const mmHint = containerEl.createEl('div', { cls: 'setting-item-description' });
+    mmHint.style.marginBottom = '12px';
+    mmHint.style.padding = '8px';
+    mmHint.style.fontSize = '12px';
+    mmHint.style.background = 'var(--background-modifier-form-field)';
+    mmHint.style.borderRadius = '4px';
+    mmHint.innerHTML = `<strong>首次使用前需安装:</strong><br>
+<code>brew install whisper-cpp ffmpeg</code> — 语音转写<br>
+<code>brew tap kn007/silk-v3-decoder && brew install silk-v3-decoder</code> — .silk 解码<br>
+然后下载模型并启动服务：<br>
+<code>bash scripts/start-whisper-server.sh</code><br>
+图片 OCR 推荐 <a href="https://github.com/hiroi-sora/RapidOCR-json">RapidOCR-json</a>，VLM 在 LM Studio 里加载 <code>qwen2.5-vl-7b</code> 即可。`;
+
+    // Voice transcription
+    containerEl.createEl('h4', { text: '语音转写 (Whisper)' });
+    new Setting(containerEl)
+      .setName('启用语音转写')
+      .setDesc('默认关闭。开启后，简报里的语音消息会显示转写文字')
+      .addToggle(t => t.setValue(this.plugin.settings.enableVoiceTranscription).onChange(async v => {
+        this.plugin.settings.enableVoiceTranscription = v;
+        await this.plugin.saveSettings();
+      }));
+    new Setting(containerEl)
+      .setName('Whisper 服务地址')
+      .setDesc('whisper.cpp server 的 HTTP 端点')
+      .addText(t => t.setPlaceholder('http://localhost:8081').setValue(this.plugin.settings.whisperEndpoint).onChange(async v => {
+        this.plugin.settings.whisperEndpoint = v.trim();
+        await this.plugin.saveSettings();
+      }));
+    new Setting(containerEl)
+      .setName('语音语言')
+      .setDesc('ISO 639-1 代码，中文用 zh')
+      .addText(t => t.setPlaceholder('zh').setValue(this.plugin.settings.whisperLanguage).onChange(async v => {
+        this.plugin.settings.whisperLanguage = v.trim() || 'zh';
+        await this.plugin.saveSettings();
+      }));
+    new Setting(containerEl)
+      .setName('测试 Whisper 连接')
+      .addButton(b => b.setButtonText('测试').onClick(async () => {
+        try {
+          const resp = await fetch(`${this.plugin.settings.whisperEndpoint}/health`);
+          new Notice(resp.ok ? 'Whisper 连接成功' : `Whisper 失败: HTTP ${resp.status}`, 5000);
+        } catch (e) {
+          new Notice(`Whisper 连接失败: ${(e as Error).message}`, 5000);
+        }
+      }));
+
+    // Image analysis
+    containerEl.createEl('h4', { text: '图片分析 (OCR + VLM)' });
+    new Setting(containerEl)
+      .setName('启用 OCR（截图文字抽取）')
+      .setDesc('适合聊天截图、文档截图；速度快（~0.2s/张）')
+      .addToggle(t => t.setValue(this.plugin.settings.enableImageOcr).onChange(async v => {
+        this.plugin.settings.enableImageOcr = v;
+        await this.plugin.saveSettings();
+      }));
+    new Setting(containerEl)
+      .setName('启用 VLM（生活照 / 表情包描述）')
+      .setDesc('适合照片、海报、表情包；速度较慢（~3s/张），需要 LM Studio 加载 VLM 模型')
+      .addToggle(t => t.setValue(this.plugin.settings.enableImageVlm).onChange(async v => {
+        this.plugin.settings.enableImageVlm = v;
+        await this.plugin.saveSettings();
+      }));
+    new Setting(containerEl)
+      .setName('OCR 服务地址')
+      .setDesc('RapidOCR-json 等兼容 /ocr 端点的 HTTP 服务')
+      .addText(t => t.setPlaceholder('http://localhost:8090').setValue(this.plugin.settings.ocrEndpoint).onChange(async v => {
+        this.plugin.settings.ocrEndpoint = v.trim();
+        await this.plugin.saveSettings();
+      }));
+    new Setting(containerEl)
+      .setName('VLM 服务地址')
+      .setDesc('留空则复用上面的"AI 服务地址" (LM Studio)')
+      .addText(t => t.setPlaceholder('留空 = 同 AI 服务地址').setValue(this.plugin.settings.vlmEndpoint).onChange(async v => {
+        this.plugin.settings.vlmEndpoint = v.trim();
+        await this.plugin.saveSettings();
+      }));
+    new Setting(containerEl)
+      .setName('VLM 模型名')
+      .setDesc('LM Studio 中加载的视觉模型 ID，留空则 LM Studio 自动选择')
+      .addText(t => t.setPlaceholder('qwen2.5-vl-7b 或留空').setValue(this.plugin.settings.vlmModel).onChange(async v => {
+        this.plugin.settings.vlmModel = v.trim();
+        await this.plugin.saveSettings();
+      }));
+
+    // Shared
+    containerEl.createEl('h4', { text: '共享设置' });
+    new Setting(containerEl)
+      .setName('媒体缓存目录')
+      .setDesc('转写和图片分析结果的缓存路径（避免重复处理同一段内容）')
+      .addText(t => t.setPlaceholder(join(process.env.HOME || '', '.wechat-hub/media-cache')).setValue(this.plugin.settings.mediaCacheDir).onChange(async v => {
+        this.plugin.settings.mediaCacheDir = v.trim();
+        await this.plugin.saveSettings();
+      }));
+    new Setting(containerEl)
+      .setName('微信媒体根目录（原始语音/图片文件）')
+      .setDesc('留空则自动检测 ~/Library/Containers/com.tencent.xinWeChat/.../xwechat_files/<user>/')
+      .addText(t => t.setPlaceholder('留空 = 自动检测').setValue(this.plugin.settings.wechatMediaRoot).onChange(async v => {
+        this.plugin.settings.wechatMediaRoot = v.trim();
+        await this.plugin.saveSettings();
+      }));
+
     // --- Quick Actions ---
     containerEl.createEl('h3', { text: '快速操作' });
 

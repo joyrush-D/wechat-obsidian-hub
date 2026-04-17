@@ -14,6 +14,15 @@ import { ExtractionStore } from './intel/extraction-store';
 import { generateWeeklyRollup, generateTopicBrief, runACHAnalysis } from './intel/retrospective';
 import { buildGroupDossier } from './intel/group-dossier';
 import { IdentityResolver } from './intel/identity-resolver';
+import { MediaEnhancer } from './media/media-enhancer';
+import { WhisperClient } from './media/whisper-client';
+import { OcrClient } from './media/ocr-client';
+import { VlmClient } from './media/vlm-client';
+import { VoiceCache } from './media/voice-cache';
+import { VoiceProcessor } from './media/voice-processor';
+import { ImageProcessor } from './media/image-processor';
+import { WeChatFileLocator } from './media/wechat-file-locator';
+import { SilkDecoder } from './media/silk-decoder';
 import type { ParsedMessage } from './types';
 
 export default class OWHPlugin extends Plugin {
@@ -817,7 +826,94 @@ export default class OWHPlugin extends Plugin {
 
     // Sort by time ascending
     allMessages.sort((a, b) => a.time.getTime() - b.time.getTime());
+
+    // Multimodal enhancement: voice → transcript, image → OCR/VLM description.
+    // Best-effort — placeholders preserved on any failure.
+    try {
+      const enhancer = this.buildMediaEnhancer();
+      if (enhancer) {
+        const voiceCount = allMessages.filter(m => m.type === 'voice').length;
+        const imageCount = allMessages.filter(m => m.type === 'image').length;
+        if (voiceCount + imageCount > 0) {
+          new Notice(`OWH: 处理多模态 (${voiceCount} 语音 / ${imageCount} 图片)…`);
+          const stats = await enhancer.enhance(allMessages);
+          console.log('OWH: media enhancement stats', stats);
+          if (stats.errors.length > 0) {
+            console.warn('OWH: media enhancement partial failures:', stats.errors.slice(0, 10));
+          }
+        }
+      }
+    } catch (e) {
+      console.error('OWH: media enhancement failed entirely, keeping placeholders:', e);
+    }
+
     return allMessages;
+  }
+
+  /**
+   * Build a MediaEnhancer from current settings. Returns null if all modalities
+   * are disabled, or if no wechatMediaRoot is configured (can't locate files).
+   */
+  private buildMediaEnhancer(): MediaEnhancer | null {
+    const s = this.settings;
+    const voiceOn = s.enableVoiceTranscription;
+    const imageOn = s.enableImageOcr || s.enableImageVlm;
+    if (!voiceOn && !imageOn) return null;
+
+    const mediaRoot = s.wechatMediaRoot || this.autoDetectMediaRoot();
+    if (!mediaRoot) {
+      console.warn('OWH: multimodal enabled but no wechatMediaRoot configured');
+      return null;
+    }
+
+    const cacheDir = s.mediaCacheDir || join(process.env.HOME || '', '.wechat-hub', 'media-cache');
+    const locator = new WeChatFileLocator(mediaRoot);
+
+    let voiceProcessor = null;
+    let silkDecoder = null;
+    if (voiceOn) {
+      const whisper = new WhisperClient(s.whisperEndpoint);
+      const voiceCache = new VoiceCache(join(cacheDir, 'voice'));
+      voiceProcessor = new VoiceProcessor(whisper, voiceCache);
+      silkDecoder = new SilkDecoder();
+    }
+
+    let imageProcessor = null;
+    if (imageOn) {
+      const ocr = new OcrClient(s.ocrEndpoint);
+      const vlmEndpoint = s.vlmEndpoint || s.aiEndpoint;
+      const vlm = new VlmClient(vlmEndpoint, s.vlmModel);
+      const imageCache = new VoiceCache(join(cacheDir, 'image'));
+      imageProcessor = new ImageProcessor(ocr, vlm, imageCache);
+    }
+
+    return new MediaEnhancer({
+      voiceProcessor,
+      imageProcessor,
+      locator,
+      silkDecoder,
+      voiceLanguage: s.whisperLanguage,
+      ocrLanguage: s.ocrLanguage,
+      concurrency: 4,
+    });
+  }
+
+  /** Best-effort detection of the WeChat media root (Mac-only, xwechat_files layout). */
+  private autoDetectMediaRoot(): string {
+    const home = process.env.HOME || '';
+    const base = join(home, 'Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files');
+    if (!existsSync(base)) return '';
+    try {
+      const entries = readdirSync(base);
+      for (const entry of entries) {
+        if (entry === 'all_users') continue;
+        const userRoot = join(base, entry);
+        if (existsSync(join(userRoot, 'msg_attach')) || existsSync(join(userRoot, 'msg'))) {
+          return userRoot;
+        }
+      }
+    } catch { /* ignore */ }
+    return '';
   }
 
   private async saveBriefing(date: string, content: string): Promise<void> {

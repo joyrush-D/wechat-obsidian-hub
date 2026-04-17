@@ -11,6 +11,25 @@ export interface OWHSettings {
   maxMessagesPerConversation: number;
   skipEmoji: boolean;
   skipSystemMessages: boolean;
+
+  // v0.3.0 — Multimodal: voice transcription (whisper.cpp)
+  enableVoiceTranscription: boolean;
+  whisperEndpoint: string;
+  whisperLanguage: string;
+
+  // v0.3.0 — Multimodal: image analysis (OCR + VLM)
+  enableImageOcr: boolean;
+  enableImageVlm: boolean;
+  ocrEndpoint: string;
+  ocrLanguage: string;
+  vlmEndpoint: string;             // empty = reuse aiEndpoint
+  vlmModel: string;
+
+  // Shared media cache
+  mediaCacheDir: string;           // ~/.wechat-hub/media-cache by default
+
+  // WeChat media root (for voice/image file resolution)
+  wechatMediaRoot: string;         // auto-detected from wechatDataDir if empty
 }
 
 export const DEFAULT_SETTINGS: OWHSettings = {
@@ -26,6 +45,20 @@ export const DEFAULT_SETTINGS: OWHSettings = {
   maxMessagesPerConversation: 500,
   skipEmoji: true,
   skipSystemMessages: true,
+
+  enableVoiceTranscription: false,
+  whisperEndpoint: 'http://localhost:8081',
+  whisperLanguage: 'zh',
+
+  enableImageOcr: false,
+  enableImageVlm: false,
+  ocrEndpoint: 'http://localhost:8090',
+  ocrLanguage: 'ch',
+  vlmEndpoint: '',                 // empty = reuse aiEndpoint
+  vlmModel: '',
+
+  mediaCacheDir: '',               // empty = default to ~/.wechat-hub/media-cache
+  wechatMediaRoot: '',
 };
 
 export interface Contact {
