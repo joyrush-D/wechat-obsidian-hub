@@ -378,11 +378,13 @@ export class BriefingGenerator {
       const conversations = new Set(msgs.map(m => m.conversationName));
       const lines = [`### ${name} (${msgs.length} 条，跨 ${conversations.size} 个对话)`];
 
-      // Show top 5 most informative messages (longest text, filtered)
+      // Show top 8 most informative messages (filter: any text non-empty, skip emoji)
+      // Lowered threshold from >10 to >=3 after user noticed short but meaningful
+      // messages (e.g. "你这是什么时候的") were filtered out.
       const informative = msgs
-        .filter(m => m.text.length > 10 && m.type !== 'emoji')
+        .filter(m => m.text.length >= 3 && m.type !== 'emoji')
         .sort((a, b) => b.text.length - a.text.length)
-        .slice(0, 5);
+        .slice(0, 8);
 
       for (const m of informative) {
         const time = m.time.toTimeString().slice(0, 5);
@@ -735,7 +737,13 @@ export class BriefingGenerator {
     let mainBrief: string;
     let synthesisFailed = false;
     try {
-      const directPrompt = buildDirectSynthesisPrompt(date, trimmedAllMessages, metaStats, this.options.userWxid);
+      const directPrompt = buildDirectSynthesisPrompt(
+        date,
+        trimmedAllMessages,
+        metaStats,
+        this.options.userWxid,
+        this.options.userIdentities,
+      );
       mainBrief = await llmClient.complete(directPrompt);
       if (!mainBrief || mainBrief.length < 100) {
         throw new Error('LLM 返回内容过短，可能模型崩溃');

@@ -15,11 +15,18 @@ export function buildDirectSynthesisPrompt(
   allMessages: string,
   metaStats: string,
   userWxid: string = '',
+  userIdentities: string[] = [],
 ): string {
+  const identityList = userIdentities.length > 0
+    ? userIdentities.slice(0, 30).join(' / ')
+    : userWxid;
   return `你是情报分析员，以美军 PDB（总统每日简报）标准为决策者（你的领导）撰写日报。
 
 【输入】${metaStats}
-${userWxid ? `用户标识：${userWxid}（这是"你"/"领导"）` : ''}
+【重要 - 用户的所有身份】${identityList}
+  → 消息中出现上述任何名字（如 @某个名字），都是在 @ 领导本人。
+  → 领导在不同群用不同昵称（罗俊/广和通-罗俊/罗舒扬爸爸等），这些都是同一个人。
+  → 领导发出的消息以 "joyrush:" 开头。
 
 【严格纪律 - ICD 203】
 1. **结论前置**：每段第一句给结论

@@ -13,6 +13,7 @@ import { BriefingGenerator } from './ai/briefing-generator';
 import { ExtractionStore } from './intel/extraction-store';
 import { generateWeeklyRollup, generateTopicBrief, runACHAnalysis } from './intel/retrospective';
 import { buildGroupDossier } from './intel/group-dossier';
+import { IdentityResolver } from './intel/identity-resolver';
 import type { ParsedMessage } from './types';
 
 export default class OWHPlugin extends Plugin {
@@ -87,31 +88,33 @@ export default class OWHPlugin extends Plugin {
           const folderName = wechatDir.split('/').filter(Boolean).slice(-2, -1)[0] || '';
           const userAlias = folderName.replace(/_[a-f0-9]+$/, '');
 
-          // In WeChat groups people @ user by nickname/remark (e.g. "@Dexter"),
-          // not by wxid alias. Resolve all user identities from contact.db.
-          const userIdentities: string[] = [userAlias];
+          // Build authoritative IdentityResolver — indexes every wxid with
+          // all names (contact, nickname, remark, per-group aliases).
+          // Used to resolve "same person with different names" across the app.
+          let userIdsList: string[] = [userAlias];
           try {
             const dbDir = this.settings.decryptedDbDir;
             if (dbDir) {
               const contactPath = join(dbDir, 'contact', 'contact.db');
               if (existsSync(contactPath)) {
                 const cdb = this.dbConnector.loadFromBytes(new Uint8Array(readFileSync(contactPath)));
-                const res = cdb.exec(
-                  `SELECT username, nick_name, remark, alias FROM contact WHERE alias = '${userAlias.replace(/'/g, "''")}' OR username = '${userAlias.replace(/'/g, "''")}' LIMIT 1`
-                );
-                if (res.length > 0 && res[0].values.length > 0) {
-                  for (const v of res[0].values[0]) {
-                    if (v && typeof v === 'string' && v.trim()) userIdentities.push(v.trim());
-                  }
+                const tmpReader = new ContactReader(cdb);
+                const resolver = new IdentityResolver(tmpReader);
+                const stats = resolver.stats();
+                console.log(`OWH: IdentityResolver — ${stats.identities} identities, ${stats.aliases} aliases (${stats.withRemark} with remark)`);
+
+                // Collect all names the user is known by
+                const userIdentity = resolver.findByName(userAlias);
+                if (userIdentity) {
+                  userIdsList = [...userIdentity.allNames];
+                  console.log(`OWH: User identities (${userIdsList.length}): ${userIdsList.slice(0, 10).join(', ')}${userIdsList.length > 10 ? '...' : ''}`);
                 }
                 cdb.close();
               }
             }
           } catch (e) {
-            console.error('OWH: Failed to resolve user identities:', e);
+            console.error('OWH: Failed to build identity resolver:', e);
           }
-          const userIdsList = [...new Set(userIdentities)].filter(Boolean);
-          console.log(`OWH: User identities for @ detection: ${userIdsList.join(', ')}`);
 
           const extractionStore = new ExtractionStore(process.env.HOME || '');
           const generator = new BriefingGenerator({
