@@ -42,6 +42,7 @@ class MockPlugin {
     console.log(`[mock] Plugin registered command: ${cmd.id}`);
   }
   addSettingTab() {}
+  registerEvent() {}
 }
 
 class MockNotice {
@@ -87,7 +88,14 @@ const mockApp = {
       const full = join(VAULT_DIR, file.path || file);
       writeFileSync(full, content, 'utf-8');
     },
+    read: async (file) => {
+      const full = join(VAULT_DIR, file.path || file);
+      return existsSync(full) ? readFileSync(full, 'utf-8') : '';
+    },
     getAbstractFileByPath: (p) => existsSync(join(VAULT_DIR, p)) ? { path: p } : null,
+  },
+  workspace: {
+    on: () => ({ unsubscribe: () => {} }),
   },
   commands: { executeCommandById: () => {} },
 };

@@ -257,10 +257,9 @@ export class BriefingGenerator {
       const hhmmss = msg.time.toTimeString().slice(0, 8);
       const sender = msg.sender || msg.senderWxid;
       const text = msg.text.slice(0, 300).replace(/\n/g, ' ');
-      // Conversation name: use resolved name (now correct via hash→wxid→remark pipeline)
-      // Show both display name and wxid (for user to search in WeChat manually)
+      // Conversation name → [[WeChat-Groups/群名]] wikilink (lazily generated on click)
       const convoTag = msg.conversationName && !msg.conversationName.match(/^[a-f0-9]{32}$/)
-        ? `**${msg.conversationName}**`
+        ? `[[WeChat-Groups/${msg.conversationName}|${msg.conversationName}]]`
         : `_${msg.conversationId || msg.conversationName}_ (未命名)`;
       lines.push(`- 🔴 **[${hhmmss}] ${sender}** 在 ${convoTag} — ${reason}`);
       lines.push(`  > ${text}`);

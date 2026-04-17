@@ -1,4 +1,4 @@
-import { Plugin, Notice, Modal, App, Setting } from 'obsidian';
+import { Plugin, Notice, Modal, App, Setting, TFile } from 'obsidian';
 import { readFileSync, existsSync, readdirSync, mkdirSync, copyFileSync } from 'fs';
 import { join } from 'path';
 import { execSync } from 'child_process';
@@ -12,6 +12,7 @@ import { LlmClient } from './ai/llm-client';
 import { BriefingGenerator } from './ai/briefing-generator';
 import { ExtractionStore } from './intel/extraction-store';
 import { generateWeeklyRollup, generateTopicBrief, runACHAnalysis } from './intel/retrospective';
+import { buildGroupDossier } from './intel/group-dossier';
 import type { ParsedMessage } from './types';
 
 export default class OWHPlugin extends Plugin {
@@ -294,6 +295,20 @@ export default class OWHPlugin extends Plugin {
       },
     });
 
+    // Lazy group-dossier generation: when user clicks [[WeChat-Groups/xxx]]
+    // Obsidian auto-creates the empty note, we detect the open and populate it.
+    this.registerEvent(this.app.workspace.on('file-open', async (file: TFile | null) => {
+      if (!file) return;
+      if (!file.path.startsWith('WeChat-Groups/')) return;
+      try {
+        const existing = await this.app.vault.read(file);
+        if (existing.trim().length > 200) return;  // already populated
+        await this.populateGroupDossier(file);
+      } catch (e) {
+        console.error('OWH: group-dossier populate failed', e);
+      }
+    }));
+
     console.log('OWH: WeChat Obsidian Hub loaded');
   }
 
@@ -307,6 +322,99 @@ export default class OWHPlugin extends Plugin {
       const modal = new InputModal(this.app, title, placeholder, defaultValue, resolve);
       modal.open();
     });
+  }
+
+  /**
+   * Populate a [[WeChat-Groups/xxx]] note on-demand when user opens it.
+   * The note filename corresponds to the group's display name.
+   */
+  private async populateGroupDossier(file: TFile): Promise<void> {
+    // Note name = group display name (from briefing wikilink)
+    const displayName = file.basename;
+
+    await this.ensureDbReady();
+    const dir = this.settings.decryptedDbDir;
+    if (!dir) {
+      await this.app.vault.modify(file, `# ${displayName}\n\n> 未配置解密数据库目录，无法生成档案。`);
+      return;
+    }
+
+    new Notice(`OWH: 正在为群 "${displayName}" 生成档案...`);
+
+    // Load contacts + messages
+    const contactData = readFileSync(join(dir, 'contact', 'contact.db'));
+    const contactDb = this.dbConnector.loadFromBytes(new Uint8Array(contactData));
+    const contactReader = new ContactReader(contactDb);
+
+    // Find the group wxid whose display name matches
+    let groupWxid = '';
+    for (const c of contactReader.getAllContacts()) {
+      const name = c.remark || c.nickName || c.username;
+      if (name === displayName) {
+        groupWxid = c.username;
+        break;
+      }
+    }
+
+    if (!groupWxid) {
+      await this.app.vault.modify(file, `# ${displayName}\n\n> 未在联系人表中找到名为 "${displayName}" 的群/联系人。\n> 请确认群名拼写正确。`);
+      contactDb.close();
+      return;
+    }
+
+    // Find message DB
+    const msgDir = join(dir, 'message');
+    const msgFiles = readdirSync(msgDir).filter((f: string) => f.endsWith('.db') && (f.startsWith('message_') || f.startsWith('biz_message_')) && !f.includes('fts') && !f.includes('resource'));
+
+    // Resolve user identities for @ detection
+    const wechatDir = this.settings.wechatDataDir || this.detectWeChatDataDir() || '';
+    const folderName = wechatDir.split('/').filter(Boolean).slice(-2, -1)[0] || '';
+    const userAlias = folderName.replace(/_[a-f0-9]+$/, '');
+    const userIdentities: string[] = [userAlias];
+    try {
+      const res = contactDb.exec(
+        `SELECT nick_name, remark, alias FROM contact WHERE alias = '${userAlias.replace(/'/g, "''")}' LIMIT 1`
+      );
+      if (res.length > 0 && res[0].values.length > 0) {
+        for (const v of res[0].values[0]) {
+          if (v && typeof v === 'string' && v.trim()) userIdentities.push(v.trim());
+        }
+      }
+    } catch { /* ignore */ }
+
+    // Build dossier from the right message DB (scan all)
+    let content = '';
+    for (const f of msgFiles) {
+      const msgData = readFileSync(join(msgDir, f));
+      const msgDb = this.dbConnector.loadFromBytes(new Uint8Array(msgData));
+      const msgReader = new MessageReader(msgDb);
+      // Test if this DB contains the target group's table
+      const { createHash } = await import('crypto');
+      const hash = createHash('md5').update(groupWxid).digest('hex');
+      const tables = msgReader.getConversationTables();
+      if (tables.includes(`Msg_${hash}`)) {
+        content = buildGroupDossier({
+          groupWxid,
+          groupName: displayName,
+          contactReader,
+          messageReader: msgReader,
+          daysBack: 7,
+          userIdentities,
+        });
+        msgDb.close();
+        break;
+      }
+      msgDb.close();
+    }
+
+    contactDb.close();
+
+    if (!content) {
+      content = `# ${displayName}\n\n> wxid: \`${groupWxid}\`\n> 未找到该群的消息数据表`;
+    }
+
+    await this.app.vault.modify(file, content);
+    new Notice(`OWH: 档案已生成 ${displayName}`, 4000);
   }
 
   /** Lazy-init the DB connector on first use */
