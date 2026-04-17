@@ -19,6 +19,8 @@ import type { ParsedMessage } from './types';
 export default class OWHPlugin extends Plugin {
   settings: OWHSettings = DEFAULT_SETTINGS;
   private dbConnector: DbConnector = new DbConnector();
+  /** Set during generate-briefing — used by loadAndParseMessages for canonical names */
+  private identityResolver: IdentityResolver | null = null;
 
   async onload() {
     await this.loadSettings();
@@ -90,8 +92,9 @@ export default class OWHPlugin extends Plugin {
 
           // Build authoritative IdentityResolver — indexes every wxid with
           // all names (contact, nickname, remark, per-group aliases).
-          // Used to resolve "same person with different names" across the app.
+          // Used everywhere: @ detection, Pattern of Life dedup, dossiers, etc.
           let userIdsList: string[] = [userAlias];
+          let identityResolver: IdentityResolver | null = null;
           try {
             const dbDir = this.settings.decryptedDbDir;
             if (dbDir) {
@@ -99,12 +102,12 @@ export default class OWHPlugin extends Plugin {
               if (existsSync(contactPath)) {
                 const cdb = this.dbConnector.loadFromBytes(new Uint8Array(readFileSync(contactPath)));
                 const tmpReader = new ContactReader(cdb);
-                const resolver = new IdentityResolver(tmpReader);
-                const stats = resolver.stats();
+                identityResolver = new IdentityResolver(tmpReader);
+                const stats = identityResolver.stats();
                 console.log(`OWH: IdentityResolver — ${stats.identities} identities, ${stats.aliases} aliases (${stats.withRemark} with remark)`);
 
                 // Collect all names the user is known by
-                const userIdentity = resolver.findByName(userAlias);
+                const userIdentity = identityResolver.findByName(userAlias);
                 if (userIdentity) {
                   userIdsList = [...userIdentity.allNames];
                   console.log(`OWH: User identities (${userIdsList.length}): ${userIdsList.slice(0, 10).join(', ')}${userIdsList.length > 10 ? '...' : ''}`);
@@ -115,6 +118,8 @@ export default class OWHPlugin extends Plugin {
           } catch (e) {
             console.error('OWH: Failed to build identity resolver:', e);
           }
+          // Stash resolver on the plugin instance so loadAndParseMessages + group dossier can use it
+          this.identityResolver = identityResolver;
 
           const extractionStore = new ExtractionStore(process.env.HOME || '');
           const generator = new BriefingGenerator({
@@ -123,6 +128,7 @@ export default class OWHPlugin extends Plugin {
             userWxid: userAlias,
             userIdentities: userIdsList,
             extractionStore,
+            identityResolver: identityResolver ?? undefined,
           });
 
           // Filename includes timestamp so multiple runs per day don't overwrite
@@ -752,10 +758,18 @@ export default class OWHPlugin extends Plugin {
             // Integer sender ID → resolve via Name2Id
             senderWxid = msgReader.resolveSenderId(raw.real_sender_id);
           }
-          const senderContact = contactReader.getContact(senderWxid);
-          const sender = senderContact
-            ? (senderContact.remark || senderContact.nickName || senderWxid)
-            : senderWxid || conversationName;
+          // Canonical name from IdentityResolver (knows ALL aliases per wxid).
+          // Falls back to ContactReader if resolver not built.
+          let sender: string;
+          if (this.identityResolver) {
+            const ident = this.identityResolver.get(senderWxid);
+            sender = ident?.primaryName || senderWxid || conversationName;
+          } else {
+            const senderContact = contactReader.getContact(senderWxid);
+            sender = senderContact
+              ? (senderContact.remark || senderContact.nickName || senderWxid)
+              : senderWxid || conversationName;
+          }
 
           allMessages.push({
             localId: raw.local_id,

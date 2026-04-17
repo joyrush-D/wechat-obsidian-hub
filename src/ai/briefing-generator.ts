@@ -21,6 +21,7 @@ import {
   initTrust,
 } from '../intel/source-trust';
 import { ExtractionStore, type ExtractionEntry } from '../intel/extraction-store';
+import { IdentityResolver } from '../intel/identity-resolver';
 
 export interface BriefingOptions {
   skipEmoji?: boolean;
@@ -35,6 +36,7 @@ export interface BriefingOptions {
   enableReflexiveControl?: boolean;  // manipulation/planted info flag
   enablePatternOfLife?: boolean;     // per-important-person daily profile
   extractionStore?: ExtractionStore;  // persistent cache (skip re-extracting unchanged convos)
+  identityResolver?: IdentityResolver;  // canonical person index (wxid → all aliases)
 }
 
 export class BriefingGenerator {
@@ -206,10 +208,20 @@ export class BriefingGenerator {
 
     if (identities.length === 0) return '';
 
+    // Build a set of all wxids that ARE the user (resolver may return multiple
+    // wxids if same person had multiple WeChat accounts, but usually 1).
+    // We use this to skip self-messages reliably.
+    const selfWxids = new Set<string>();
+    selfWxids.add(userWxid);
+    if (this.options.identityResolver) {
+      const userIdentity = this.options.identityResolver.findByName(userWxid);
+      if (userIdentity) selfWxids.add(userIdentity.wxid.toLowerCase());
+    }
+
     const mentions: Array<{ msg: ParsedMessage; reason: string; matchedId: string }> = [];
 
     for (const msg of messages) {
-      if (msg.senderWxid === userWxid) continue;  // skip user's own messages
+      if (selfWxids.has(msg.senderWxid.toLowerCase())) continue;  // skip user's own messages
       const text = msg.text;
 
       // Direct @-mention check (WeChat uses various separators after @name:
@@ -274,19 +286,32 @@ export class BriefingGenerator {
    */
   buildMechanicalPatternOfLife(messages: ParsedMessage[]): string {
     const contactsMap = this.options.contactsMap || new Map();
+    const resolver = this.options.identityResolver;
     const bySpeaker = new Map<string, { msgs: ParsedMessage[]; displayName: string; hasRemark: boolean }>();
 
     for (const msg of messages) {
       if (!msg.senderWxid || msg.senderWxid === this.options.userWxid) continue;
+      // Skip user under any alias
+      if (this.options.userIdentities && this.options.userIdentities.includes(msg.senderWxid)) continue;
       if (msg.type === 'emoji' || msg.type === 'system') continue;
       if (!bySpeaker.has(msg.senderWxid)) {
-        const contact = contactsMap.get(msg.senderWxid);
-        const display = contact?.remark || contact?.nickName || msg.sender || msg.senderWxid;
-        bySpeaker.set(msg.senderWxid, {
-          msgs: [],
-          displayName: display,
-          hasRemark: !!contact?.remark,
-        });
+        // PRIORITY: IdentityResolver canonical name > contact remark > nickName > parsed sender > wxid
+        let display: string;
+        let hasRemark = false;
+        if (resolver) {
+          const ident = resolver.get(msg.senderWxid);
+          if (ident) {
+            display = ident.primaryName;
+            hasRemark = ident.hasRemark;
+          } else {
+            display = msg.sender || msg.senderWxid;
+          }
+        } else {
+          const contact = contactsMap.get(msg.senderWxid);
+          display = contact?.remark || contact?.nickName || msg.sender || msg.senderWxid;
+          hasRemark = !!contact?.remark;
+        }
+        bySpeaker.set(msg.senderWxid, { msgs: [], displayName: display, hasRemark });
       }
       bySpeaker.get(msg.senderWxid)!.msgs.push(msg);
     }
@@ -339,15 +364,23 @@ export class BriefingGenerator {
    */
   buildPerPersonData(messages: ParsedMessage[]): string {
     const contactsMap = this.options.contactsMap || new Map();
+    const resolver = this.options.identityResolver;
     const bySpeaker = new Map<string, { msgs: ParsedMessage[]; displayName: string }>();
 
     for (const msg of messages) {
       if (!msg.senderWxid || msg.senderWxid === this.options.userWxid) continue;
+      if (this.options.userIdentities && this.options.userIdentities.includes(msg.senderWxid)) continue;
       if (msg.type === 'emoji' || msg.type === 'system') continue;
       if (msg.text.trim().length < 3) continue;
       if (!bySpeaker.has(msg.senderWxid)) {
-        // Use the already-resolved sender display name (with remark/nickname)
-        const display = msg.sender || contactsMap.get(msg.senderWxid)?.remark || contactsMap.get(msg.senderWxid)?.nickName || msg.senderWxid;
+        // Canonical name from IdentityResolver
+        let display: string;
+        if (resolver) {
+          const ident = resolver.get(msg.senderWxid);
+          display = ident?.primaryName || msg.sender || msg.senderWxid;
+        } else {
+          display = msg.sender || contactsMap.get(msg.senderWxid)?.remark || contactsMap.get(msg.senderWxid)?.nickName || msg.senderWxid;
+        }
         bySpeaker.set(msg.senderWxid, { msgs: [], displayName: display });
       }
       bySpeaker.get(msg.senderWxid)!.msgs.push(msg);
