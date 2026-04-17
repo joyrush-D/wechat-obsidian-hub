@@ -38,25 +38,44 @@ ${messages}`;
 }
 
 /**
- * Stage 3: cluster compression - compress per-conversation extractions
- * into cross-conversation themes (cuts down tokens for final synthesis).
+ * Stage 3: cluster compression with STRICT identity-based grouping.
+ *
+ * Bug fix: previous version grouped semantically-loose items ("SIM card penalty"
+ * and "customs declaration") into one theme just because both were "business risk".
+ * Now requires CONCRETE shared identity (same entity, same event, same decision).
  */
 export function buildClusteringPrompt(extractions: string): string {
-  return `你是情报分析员。下面是今日所有对话的抽取结果。请重新组织：
-不按对话分组，而是**按话题/主题**跨对话归并。
+  return `你是情报分析员。下面是今日所有对话的抽取结果。
+
+【任务】不按对话分组，而是按具体话题跨对话归并。
+
+【严格聚类规则 — 非常重要】
+两个或以上的条目只有在下列任一条件成立时，才能归入同一主题：
+1. **共享实体**：同一个公司名、产品名、项目名、人物名（例如都提到"领克"）
+2. **共享事件**：在讨论同一个具体事件（例如都在讨论"昨天某地发生的XX")
+3. **共享决策**：围绕同一个具体决策或行动
+4. **直接引用/回应**：A 的话被 B 引用或回应
+
+【禁止的错误归类】
+- ❌ 仅因"都是业务风险"、"都是合规问题"、"都是科技新闻"就归类 — 这些都是太泛的标签
+- ❌ 没有共同实体只有模糊相似性就归类
+- 如果一个条目找不到明确的共享实体/事件/决策，**单独列为一个主题**（独立主题），不要强行塞进别的主题里
 
 输出格式（严格遵守）：
 
 ## 跨群话题
 
-### [主题1: 简短标题]
-- 涉及对话: [群A], [群B]
-- 核心讨论: 一两句话
-- 关键发言: [人名]: 观点
-- 资源: 标题 (URL)
+### [主题名: 必须是具体的实体名或事件名，不是抽象类别]
+- **涉及对话**: [群A], [群B]（列出具体对话ID或群名）
+- **共同标识**: 说明为什么这些条目属于同一主题（共享的实体/事件/决策是什么）
+- **核心讨论**: 一两句话
+- **关键发言**: [人名]: 观点
+- **资源**: 标题 (URL)
 
-### [主题2: ...]
-...
+### [独立主题A: xxx]
+（只有一个条目相关的，也单独列出，不要硬塞）
+- **单一来源**: 某个对话
+- **核心**: ...
 
 ## 个人焦点
 （直接 @ 用户、求助、需要回应的事项，按紧急度排序）
@@ -65,14 +84,16 @@ export function buildClusteringPrompt(extractions: string): string {
 - 🟢 [留意] ...
 
 ## 重要人物今日动态
-（高频或有备注的发言人都说了什么）
-- [人名]: 主要话题/观点
+（高频或有备注的发言人都说了什么，按人分组）
+- **[人名]**: 主要话题/观点
 
 ## 资源汇总
-（按主题归类的所有真实链接）
-- [主题]: 标题 — URL
+（按具体主题归类的真实链接，跳过"版本不支持"）
+- **[具体主题]**: 标题 — URL
 
-请只输出上述结构，不要前言后语。中文输出。
+严格按上述结构，不要前言后语。中文输出。
+
+【自检】生成前请自问：我归到同一主题的条目，它们真的有共享的具体实体/事件吗？如果没有，就拆成多个独立主题。
 
 抽取数据:
 ${extractions}`;
@@ -127,7 +148,9 @@ ${clusteredFindings}
 
 ## 📰 今日要闻
 按主题（不按群），每个主题：
-### [主题]
+**严格要求**：每个主题必须明确说明涉及的具体实体/事件（不是抽象类别）。不相关的信息绝对不要硬凑在一起。
+### [主题: 必须是具体事物，如"领克UI规范更新"而非"设计工作"]
+**涉及**: 哪些具体实体/对话
 **核心**: 一句话结论 [置信度]
 💬 关键引用: "..." — [人名 · 信源等级]
 🧠 分析: 为何重要
@@ -243,6 +266,104 @@ export function buildTearlinePrompt(fullBriefing: string): string {
 ${fullBriefing}
 
 输出 30 秒速读版（直接输出内容，不要前言）：`;
+}
+
+/**
+ * Shareable Tearline: desensitized version suitable for sharing with team.
+ * Strips sender names, specific group names, personal details.
+ * Keeps only objective facts, decisions, and general insights.
+ *
+ * Inspired by NSA tearline format — the portion below the dashed line
+ * is the part that can be shared with allies after removing source-sensitive info.
+ */
+export function buildShareableTearlinePrompt(fullBriefing: string): string {
+  return `将以下私人简报转为**可分享给团队的脱敏版**。
+
+【脱敏纪律】
+- ✂️ 删除：具体发言人姓名（用角色代替，如"某供应商"、"某同事"、"业务方"）
+- ✂️ 删除：具体群名/对话名
+- ✂️ 删除：所有"@你/我"、个人情绪、人身评价
+- ✂️ 删除：明显只与用户相关的私人事务（个人财务、家庭、健康）
+- ✅ 保留：客观事实、行业动态、技术讨论要点、公开资源链接
+- ✅ 保留：对团队有共同价值的判断（但去掉"我认为"之类的主观口吻）
+- ✅ 保留：值得团队关注的公开趋势
+
+【输出格式】
+## 📤 可分享版（脱敏）
+
+### 业务与技术要点
+- （客观描述，去人名去群名）
+
+### 行业动态
+- （公开可讨论的新闻、技术趋势）
+
+### 值得关注的资源
+- [标题] — URL（只保留公开链接）
+
+不超过 500 字。如果简报里几乎全是私人事务，只写"本日简报以私人事务为主，无可分享内容"。
+
+输入简报:
+${fullBriefing}
+
+输出脱敏版（直接输出内容，不要前言）：`;
+}
+
+/**
+ * Reflexive Control Assessment.
+ * Identify messages that might be deliberately planted / psychological ops.
+ * Origin: Soviet military science, now central to Russian info ops doctrine.
+ */
+export function buildReflexiveControlPrompt(clusteredFindings: string): string {
+  return `你是反制信息操纵分析员（Reflexive Control Analyst）。
+
+【任务】审查以下今日信息，识别可能是**有意投放**或存在**操纵意图**的内容。
+
+【识别信号】
+- 📢 来源单一但断言肯定（缺少第二来源但说得斩钉截铁）
+- 🎯 明显迎合听众偏好（说你爱听的话）
+- 📊 数字/统计缺少出处或夸大
+- 🗓️ 时机可疑（在某决策前夕突然出现的"信息"）
+- 🔄 同一论调在多群同时出现但来源不同（协调投放特征）
+- 🏷️ 情绪煽动性词汇（用来激发情绪而非传递事实）
+- 🕵️ 匿名或半匿名来源做强断言
+
+【输出格式】
+## 🛡️ 操纵风险评估
+
+### 疑似被投放信息
+如果发现可疑内容：
+- **[信息摘要]**
+  - 可疑信号: 上述哪一项或几项
+  - 操纵概率: 高/中/低
+  - 建议: 独立验证 / 延迟行动 / 忽略
+
+如果没发现显著疑点，写："本日信息未发现显著操纵特征，但仍建议关键决策前多源验证。"
+
+只评估**明显可疑**的，不要疑神疑鬼。中文输出。
+
+待评估内容：
+${clusteredFindings}`;
+}
+
+/**
+ * Pattern of Life: per-person daily profile across all conversations.
+ */
+export function buildPatternOfLifePromptV2(perPersonData: string): string {
+  return `你是行为模式分析员（Pattern of Life）。
+
+下面是今日几位重要联系人在各群的发言汇总。每人生成一份画像：
+
+### [姓名]
+- **今日活跃度**: 高/中/低（依据：发言条数与跨群数）
+- **主要关注**: 列 2-3 个具体话题
+- **最有信息量的一句**: 直接引用最有价值的一条
+- **情绪/口吻**: 平静 / 兴奋 / 抱怨 / 紧迫 / 犹豫...
+- **异常**: 是否与其往常模式不同（如突然高频 / 突然沉默 / 罕见话题）
+
+只为数据中出现的人生成画像。不要编造没说的话。中文输出。
+
+数据：
+${perPersonData}`;
 }
 
 /**

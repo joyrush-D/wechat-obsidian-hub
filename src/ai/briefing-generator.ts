@@ -6,6 +6,9 @@ import {
   buildPdbSynthesisPrompt,
   buildTearlinePrompt,
   buildBiasAuditPrompt,
+  buildShareableTearlinePrompt,
+  buildReflexiveControlPrompt,
+  buildPatternOfLifePromptV2,
 } from './prompt-templates';
 import {
   type SourceTrustData,
@@ -25,7 +28,10 @@ export interface BriefingOptions {
   contactsMap?: Map<string, Contact>;
   userWxid?: string;
   enableTearline?: boolean;       // 30-sec ultra-condensed version
+  enableShareableTearline?: boolean;  // desensitized team-shareable version
   enableBiasAudit?: boolean;      // Heuer's 18-bias check
+  enableReflexiveControl?: boolean;  // manipulation/planted info flag
+  enablePatternOfLife?: boolean;     // per-important-person daily profile
   extractionStore?: ExtractionStore;  // persistent cache (skip re-extracting unchanged convos)
 }
 
@@ -38,7 +44,10 @@ export class BriefingGenerator {
       skipEmoji: true,
       skipSystemMessages: true,
       enableTearline: true,
+      enableShareableTearline: true,
       enableBiasAudit: true,
+      enableReflexiveControl: true,
+      enablePatternOfLife: true,
       ...options,
     };
     this.trust = options.trust || initTrust();
@@ -90,6 +99,63 @@ export class BriefingGenerator {
       lines.push(line);
     }
     return lines.join('\n');
+  }
+
+  /**
+   * Build per-person daily data for Pattern of Life analysis.
+   * Returns top 8 speakers (by message volume or trust grade), with their quotes across groups.
+   */
+  buildPerPersonData(messages: ParsedMessage[]): string {
+    const contactsMap = this.options.contactsMap || new Map();
+    const bySpeaker = new Map<string, { msgs: ParsedMessage[]; displayName: string }>();
+
+    for (const msg of messages) {
+      if (!msg.senderWxid || msg.senderWxid === this.options.userWxid) continue;
+      if (msg.type === 'emoji' || msg.type === 'system') continue;
+      if (msg.text.trim().length < 3) continue;
+      if (!bySpeaker.has(msg.senderWxid)) {
+        // Use the already-resolved sender display name (with remark/nickname)
+        const display = msg.sender || contactsMap.get(msg.senderWxid)?.remark || contactsMap.get(msg.senderWxid)?.nickName || msg.senderWxid;
+        bySpeaker.set(msg.senderWxid, { msgs: [], displayName: display });
+      }
+      bySpeaker.get(msg.senderWxid)!.msgs.push(msg);
+    }
+
+    // Sort speakers: prefer those with remarks (user cares about them) AND not raw wxid_, then by volume
+    const speakers = [...bySpeaker.entries()].sort((a, b) => {
+      const ca = contactsMap.get(a[0]);
+      const cb = contactsMap.get(b[0]);
+      const isRawA = /^wxid_/.test(a[1].displayName) ? 0 : 50;  // prefer named over wxid_
+      const isRawB = /^wxid_/.test(b[1].displayName) ? 0 : 50;
+      const sa = (ca?.remark ? 100 : 0) + isRawA + a[1].msgs.length;
+      const sb = (cb?.remark ? 100 : 0) + isRawB + b[1].msgs.length;
+      return sb - sa;
+    }).slice(0, 8);  // top 8
+
+    if (speakers.length === 0) return '';
+
+    const sections: string[] = [];
+    for (const [wxid, info] of speakers) {
+      const msgs = info.msgs;
+      const name = info.displayName;
+      const conversations = new Set(msgs.map(m => m.conversationName));
+      const lines = [`### ${name} (${msgs.length} 条，跨 ${conversations.size} 个对话)`];
+
+      // Show top 5 most informative messages (longest text, filtered)
+      const informative = msgs
+        .filter(m => m.text.length > 10 && m.type !== 'emoji')
+        .sort((a, b) => b.text.length - a.text.length)
+        .slice(0, 5);
+
+      for (const m of informative) {
+        const time = m.time.toTimeString().slice(0, 5);
+        const text = m.text.slice(0, 150).replace(/\n/g, ' ');
+        lines.push(`[${time} @ ${m.conversationName}]: ${text}`);
+      }
+      sections.push(lines.join('\n'));
+    }
+
+    return sections.join('\n\n');
   }
 
   formatTopSourcesSummary(): string {
@@ -439,12 +505,15 @@ export class BriefingGenerator {
     const metaStats = `- 数据日期: ${date}\n- 总消息: ${totalMessages}, 对话: ${totalConversations}\n- 信源库规模: ${Object.keys(this.trust.sources).length}`;
     const mainBrief = await this.synthesize(clustered, llmClient, date, metaStats, extractions);
 
-    // Stage 5: enrich (Tearline + Bias Audit)
+    // Stage 5: enrich (parallel-ish: Tearline, Bias Audit, Reflexive Control, Pattern of Life, Shareable)
     let tearline = '';
     let biasAudit = '';
+    let shareable = '';
+    let reflexive = '';
+    let patternOfLife = '';
 
     if (this.options.enableTearline) {
-      await onProgress(header + `_⚡ 阶段 5/5: 生成 30 秒速读版_`, false);
+      await onProgress(header + `_⚡ 阶段 5: 生成 30 秒速读版_`, false);
       try {
         tearline = await llmClient.complete(buildTearlinePrompt(mainBrief));
       } catch (e) {
@@ -452,8 +521,29 @@ export class BriefingGenerator {
       }
     }
 
+    if (this.options.enableReflexiveControl) {
+      await onProgress(header + `_🛡️ 阶段 5: 反操纵评估_`, false);
+      try {
+        reflexive = await llmClient.complete(buildReflexiveControlPrompt(clustered.slice(0, 20000)));
+      } catch (e) {
+        console.error('Reflexive control failed:', e);
+      }
+    }
+
+    if (this.options.enablePatternOfLife) {
+      await onProgress(header + `_👥 阶段 5: 重要人物画像_`, false);
+      const perPersonData = this.buildPerPersonData(messages);
+      if (perPersonData) {
+        try {
+          patternOfLife = await llmClient.complete(buildPatternOfLifePromptV2(perPersonData));
+        } catch (e) {
+          console.error('Pattern of life failed:', e);
+        }
+      }
+    }
+
     if (this.options.enableBiasAudit) {
-      await onProgress(header + `_🔍 阶段 5/5: 偏差审计_`, false);
+      await onProgress(header + `_🔍 阶段 5: 偏差审计_`, false);
       try {
         biasAudit = await llmClient.complete(buildBiasAuditPrompt(mainBrief));
       } catch (e) {
@@ -461,14 +551,38 @@ export class BriefingGenerator {
       }
     }
 
-    // Compose final document with Tearline at top (boss reads here first)
+    if (this.options.enableShareableTearline) {
+      await onProgress(header + `_📤 阶段 5: 生成可分享版_`, false);
+      try {
+        shareable = await llmClient.complete(buildShareableTearlinePrompt(mainBrief));
+      } catch (e) {
+        console.error('Shareable failed:', e);
+      }
+    }
+
+    // Compose final document. Order matters for boss UX:
+    // 1. 30-sec Tearline (fastest read)
+    // 2. Main brief (full PDB)
+    // 3. Pattern of Life (who said what)
+    // 4. Reflexive Control (what to question)
+    // 5. Bias Audit (self-check)
+    // 6. Shareable Tearline (team-ready, below dashed line)
     const sections: string[] = [];
     if (tearline) {
       sections.push(`# ⚡ 30 秒速读 — ${date}\n\n${tearline}\n\n---`);
     }
     sections.push(mainBrief);
+    if (patternOfLife) {
+      sections.push(`---\n\n## 👥 重要人物今日画像 (Pattern of Life)\n\n${patternOfLife}`);
+    }
+    if (reflexive) {
+      sections.push(`---\n\n${reflexive}`);
+    }
     if (biasAudit) {
       sections.push(`---\n\n${biasAudit}`);
+    }
+    if (shareable) {
+      sections.push(`\n\n---\n---\n**以上为私人版（仅供自己）**\n\n**以下为脱敏分享版（可转发给团队）**\n---\n---\n\n${shareable}`);
     }
 
     const finalDoc = sections.join('\n\n');
