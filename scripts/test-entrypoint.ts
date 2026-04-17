@@ -12,6 +12,7 @@ import { MessageReader } from '../src/db/message-reader';
 import { parseMessage } from '../src/parser/index';
 import { LlmClient } from '../src/ai/llm-client';
 import { BriefingGenerator } from '../src/ai/briefing-generator';
+import { ExtractionStore } from '../src/intel/extraction-store';
 import type { ParsedMessage } from '../src/types';
 
 const HOME = process.env.HOME || '/Users/joyrush';
@@ -86,7 +87,8 @@ async function main() {
     return;
   }
 
-  const generator = new BriefingGenerator({ skipEmoji: true, skipSystemMessages: true });
+  const extractionStore = new ExtractionStore(HOME);
+  const generator = new BriefingGenerator({ skipEmoji: true, skipSystemMessages: true, extractionStore });
   console.log('Generating briefing...');
   const briefing = await generator.generateProgressive(
     allMessages, llmClient, TODAY,

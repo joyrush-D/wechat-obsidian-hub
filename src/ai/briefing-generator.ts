@@ -16,6 +16,7 @@ import {
   getTopSources,
   initTrust,
 } from '../intel/source-trust';
+import { ExtractionStore, type ExtractionEntry } from '../intel/extraction-store';
 
 export interface BriefingOptions {
   skipEmoji?: boolean;
@@ -25,6 +26,7 @@ export interface BriefingOptions {
   userWxid?: string;
   enableTearline?: boolean;       // 30-sec ultra-condensed version
   enableBiasAudit?: boolean;      // Heuer's 18-bias check
+  extractionStore?: ExtractionStore;  // persistent cache (skip re-extracting unchanged convos)
 }
 
 export class BriefingGenerator {
@@ -102,18 +104,24 @@ export class BriefingGenerator {
   }
 
   /**
-   * Stage 2: per-conversation extraction.
+   * Stage 2: per-conversation extraction with persistent cache.
    * Smart batching: priority conversations solo, minor ones bundled.
+   * Cache hits skip LLM calls entirely.
    */
   async extractAll(
     groups: Map<string, ParsedMessage[]>,
     llmClient: LlmClient,
     onProgress: (msg: string) => Promise<void>,
-  ): Promise<Array<{ name: string; extracted: string; msgCount: number }>> {
-    const results: Array<{ name: string; extracted: string; msgCount: number }> = [];
+    date: string,
+  ): Promise<Array<{ name: string; extracted: string; msgCount: number; cached: boolean }>> {
+    const results: Array<{ name: string; extracted: string; msgCount: number; cached: boolean }> = [];
     const PRIORITY_THRESHOLD = 15;
     const BATCH_LIMIT = 80;
     const PER_CONV_MSG_CAP = 150;
+
+    const store = this.options.extractionStore;
+    const today = store ? store.load(date) : null;
+    const cachedEntries = today ? today.entries.slice() : [];
 
     const priority: Array<[string, ParsedMessage[]]> = [];
     const minor: Array<[string, ParsedMessage[]]> = [];
@@ -122,17 +130,56 @@ export class BriefingGenerator {
       (msgs.length >= PRIORITY_THRESHOLD ? priority : minor).push([name, msgs]);
     }
 
+    // Helper: check cache by name + msgCount + lastTimestamp
+    const lookupCache = (name: string, msgs: ParsedMessage[]) => {
+      if (!store) return null;
+      const lastTs = msgs.length > 0 ? Math.max(...msgs.map(m => Math.floor(m.time.getTime() / 1000))) : 0;
+      const key = ExtractionStore.cacheKey(name, msgs.length, lastTs);
+      const hit = cachedEntries.find(e => e.cacheKey === key);
+      return hit;
+    };
+
+    const saveToCache = (name: string, conversationId: string, msgs: ParsedMessage[], extracted: string) => {
+      if (!store) return;
+      const lastTs = msgs.length > 0 ? Math.max(...msgs.map(m => Math.floor(m.time.getTime() / 1000))) : 0;
+      const key = ExtractionStore.cacheKey(name, msgs.length, lastTs);
+      const entry: ExtractionEntry = {
+        conversationName: name,
+        conversationId,
+        msgCount: msgs.length,
+        lastMsgTimestamp: lastTs,
+        cacheKey: key,
+        extracted,
+        extractedAt: new Date().toISOString(),
+      };
+      cachedEntries.push(entry);
+    };
+
+    let cacheHits = 0;
+    let cacheMisses = 0;
+
     // Process priority conversations
     for (let i = 0; i < priority.length; i++) {
       const [name, msgs] = priority[i];
       const trimmed = msgs.slice(-PER_CONV_MSG_CAP);
+
+      const cached = lookupCache(name, trimmed);
+      if (cached) {
+        cacheHits++;
+        await onProgress(`💾 缓存命中 ${i + 1}/${priority.length}: ${name}`);
+        results.push({ name, extracted: cached.extracted, msgCount: trimmed.length, cached: true });
+        continue;
+      }
+
+      cacheMisses++;
       await onProgress(`📊 抽取活跃对话 ${i + 1}/${priority.length}: ${name}`);
       const text = this.formatConversation(name, trimmed);
       try {
         const extracted = await llmClient.complete(buildExtractionPrompt(name, text));
-        results.push({ name, extracted, msgCount: trimmed.length });
+        results.push({ name, extracted, msgCount: trimmed.length, cached: false });
+        saveToCache(name, trimmed[0]?.conversationId || '', trimmed, extracted);
       } catch (e) {
-        results.push({ name, extracted: `（提取失败: ${(e as Error).message.slice(0, 80)}）`, msgCount: trimmed.length });
+        results.push({ name, extracted: `（提取失败: ${(e as Error).message.slice(0, 80)}）`, msgCount: trimmed.length, cached: false });
       }
     }
 
@@ -154,16 +201,36 @@ export class BriefingGenerator {
     for (let i = 0; i < minorBatches.length; i++) {
       const batch = minorBatches[i];
       const totalMsgs = batch.reduce((s, [, m]) => s + m.length, 0);
+      const batchKeyName = `minor_batch_${batch.map(([n]) => n).join('_').slice(0, 80)}`;
+
+      // Cache lookup using a synthetic key from batch composition
+      const combinedMsgs = batch.flatMap(([, m]) => m);
+      const cached = lookupCache(batchKeyName, combinedMsgs);
+      if (cached) {
+        cacheHits++;
+        await onProgress(`💾 次要批次缓存命中 ${i + 1}/${minorBatches.length}`);
+        results.push({ name: `次要对话(${batch.length}个)`, extracted: cached.extracted, msgCount: totalMsgs, cached: true });
+        continue;
+      }
+
+      cacheMisses++;
       await onProgress(`📊 抽取次要对话批次 ${i + 1}/${minorBatches.length} (${batch.length}个)`);
       const combined = batch.map(([n, m]) => this.formatConversation(n, m)).join('\n\n');
       try {
         const extracted = await llmClient.complete(
           buildExtractionPrompt(`次要对话集合(${batch.length}个)`, combined),
         );
-        results.push({ name: `次要对话(${batch.length}个)`, extracted, msgCount: totalMsgs });
+        results.push({ name: `次要对话(${batch.length}个)`, extracted, msgCount: totalMsgs, cached: false });
+        saveToCache(batchKeyName, '', combinedMsgs, extracted);
       } catch (e) {
-        results.push({ name: 'minor', extracted: `（提取失败）`, msgCount: totalMsgs });
+        results.push({ name: 'minor', extracted: `（提取失败）`, msgCount: totalMsgs, cached: false });
       }
+    }
+
+    // Persist all entries (including new ones)
+    if (store) {
+      store.saveAll(date, cachedEntries);
+      await onProgress(`✅ 抽取完成 (缓存命中 ${cacheHits} / 新抽取 ${cacheMisses})`);
     }
 
     return results;
@@ -327,17 +394,35 @@ export class BriefingGenerator {
     const totalConversations = groups.size;
     const totalMessages = triaged.length;
 
-    let header = `# 微信日报 ${date}\n\n> 共 ${totalConversations} 个活跃对话, ${triaged.length} 条有效消息（已过滤 ${messages.length - triaged.length} 条噪音）\n\n`;
+    // Compute data freshness from latest message timestamp
+    const latestMsgTime = messages.length > 0
+      ? new Date(Math.max(...messages.map(m => m.time.getTime())))
+      : new Date();
+    const earliestMsgTime = messages.length > 0
+      ? new Date(Math.min(...messages.map(m => m.time.getTime())))
+      : new Date();
+    const fmt = (d: Date) => d.toLocaleString('zh-CN', { hour12: false }).replace(/\//g, '-');
+    const ageMin = Math.round((Date.now() - latestMsgTime.getTime()) / 60000);
+    const freshness = ageMin < 10 ? '🟢 最新' : ageMin < 60 ? `🟡 ${ageMin} 分钟前` : `🔴 ${Math.round(ageMin/60)} 小时前`;
+
+    const reportGenTime = fmt(new Date());
+    let header = `# 微信日报 ${date}\n\n` +
+      `> **🕐 报告生成时间**: ${reportGenTime}\n` +
+      `> **📡 数据范围**: ${fmt(earliestMsgTime)} → ${fmt(latestMsgTime)} (最新消息距今: ${freshness})\n` +
+      `> **📊 统计**: ${totalConversations} 个活跃对话, ${triaged.length} 条有效消息（已过滤 ${messages.length - triaged.length} 条噪音）\n\n`;
 
     await onProgress(header + `_🔍 阶段 1/5: 信号分流完成_`, false);
 
-    // Stage 2: extract
+    // Stage 2: extract (with persistent cache)
+    // Use date YYYY-MM-DD for cache key, regardless of full datetime label
+    const cacheDate = date.slice(0, 10);
     const extractions = await this.extractAll(
       groups,
       llmClient,
       async (msg) => {
         await onProgress(header + `_${msg}_`, false);
       },
+      cacheDate,
     );
 
     // Stage 3: cluster
@@ -385,12 +470,6 @@ export class BriefingGenerator {
     if (biasAudit) {
       sections.push(`---\n\n${biasAudit}`);
     }
-
-    // Add collapsible original extraction at the bottom (for drilldown)
-    const drillDown = extractions
-      .map(r => `### ${r.name} (${r.msgCount}条)\n${r.extracted}`)
-      .join('\n\n---\n\n');
-    sections.push(`---\n\n<details><summary>📂 原始数据下钻 (${extractions.length} 个对话)</summary>\n\n${drillDown}\n\n</details>`);
 
     const finalDoc = sections.join('\n\n');
     await onProgress(finalDoc, true);

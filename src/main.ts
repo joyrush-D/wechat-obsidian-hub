@@ -10,6 +10,7 @@ import { MessageReader } from './db/message-reader';
 import { parseMessage } from './parser/index';
 import { LlmClient } from './ai/llm-client';
 import { BriefingGenerator } from './ai/briefing-generator';
+import { ExtractionStore } from './intel/extraction-store';
 import type { ParsedMessage } from './types';
 
 export default class OWHPlugin extends Plugin {
@@ -45,17 +46,23 @@ export default class OWHPlugin extends Plugin {
             }
           }
 
-          const dbDir = this.settings.decryptedDbDir;
-          const hasDecryptedDb = dbDir && existsSync(join(dbDir, 'contact', 'contact.db'));
-
-          if (!hasDecryptedDb) {
-            new Notice('OWH: 未找到解密数据库。请先在终端运行：\ncd ~/wechat-decrypt && python3 decrypt_db.py', 8000);
-            return;
+          // Always refresh decrypted DBs to capture latest messages
+          // (skip if user explicitly set decryptMode='manual')
+          if (this.settings.decryptMode !== 'manual') {
+            const ok = await this.decryptDatabases();
+            if (!ok) {
+              const dbDir = this.settings.decryptedDbDir;
+              const hasOld = dbDir && existsSync(join(dbDir, 'contact', 'contact.db'));
+              if (!hasOld) return;  // no old data either, give up
+              new Notice('OWH: 解密失败，使用上次的旧数据继续...', 5000);
+            }
           }
 
-          if (this.settings.decryptMode === 'auto') {
-            new Notice('OWH: 正在解密最新数据...');
-            await this.decryptDatabases();
+          const dbDir = this.settings.decryptedDbDir;
+          const hasDecryptedDb = dbDir && existsSync(join(dbDir, 'contact', 'contact.db'));
+          if (!hasDecryptedDb) {
+            new Notice('OWH: 未找到解密数据库。请运行一次性设置：\ncd ~/wechat-obsidian-plugin/scripts && sudo bash owh-extract-key.sh', 12000);
+            return;
           }
 
           new Notice('OWH: 正在读取消息...');
@@ -79,10 +86,12 @@ export default class OWHPlugin extends Plugin {
           const userAlias = folderName.replace(/_[a-f0-9]+$/, '');
           console.log(`OWH: Detected user alias: ${userAlias}`);
 
+          const extractionStore = new ExtractionStore(process.env.HOME || '');
           const generator = new BriefingGenerator({
             skipEmoji: this.settings.skipEmoji,
             skipSystemMessages: this.settings.skipSystemMessages,
             userWxid: userAlias,
+            extractionStore,
           });
 
           // Filename includes timestamp so multiple runs per day don't overwrite
@@ -258,11 +267,75 @@ export default class OWHPlugin extends Plugin {
   }
 
   /**
-   * Decrypt WeChat databases.
-   * Automatically extracts key if not configured.
-   * Uses sqlcipher CLI or Python fallback.
+   * Daily decryption (no sudo needed).
+   * Uses cached keys from ~/all_keys.json + wechat-decrypt's Python script.
+   * If keys are missing, instruct user to run one-time setup.
    */
   async decryptDatabases(): Promise<boolean> {
+    const home = process.env.HOME || '';
+    const keysFile = join(home, 'all_keys.json');
+    const decryptScript = join(home, 'wechat-decrypt', 'decrypt_db.py');
+    const configFile = join(home, 'wechat-decrypt', 'config.json');
+
+    // Check prerequisites
+    if (!existsSync(keysFile)) {
+      new Notice(
+        'OWH: 未找到密钥缓存。请先运行一次性设置脚本：\n\n' +
+        'cd ~/wechat-obsidian-plugin/scripts && sudo bash owh-extract-key.sh\n\n' +
+        '完成后再生成简报。',
+        15000,
+      );
+      return false;
+    }
+
+    if (!existsSync(decryptScript)) {
+      new Notice('OWH: 未找到 decrypt_db.py，请确认 ~/wechat-decrypt/ 已克隆', 8000);
+      return false;
+    }
+
+    // Ensure config.json points at the right paths
+    const wechatDir = this.settings.wechatDataDir || this.detectWeChatDataDir() || '';
+    const outputDir = this.settings.decryptedDbDir || join(home, '.wechat-hub/decrypted');
+    if (wechatDir) {
+      const config = {
+        db_dir: wechatDir,
+        keys_file: keysFile,
+        decrypted_dir: outputDir,
+        wechat_process: 'WeChat',
+      };
+      try {
+        require('fs').writeFileSync(configFile, JSON.stringify(config, null, 2));
+      } catch (e) {
+        console.error('OWH: Failed to write config.json:', e);
+      }
+    }
+
+    // Run daily decryption
+    new Notice('OWH: 正在用缓存密钥解密最新数据库...');
+    try {
+      const output = execSync(
+        `cd ${JSON.stringify(join(home, 'wechat-decrypt'))} && python3 decrypt_db.py 2>&1 | tail -5`,
+        { timeout: 120000, encoding: 'utf-8' },
+      );
+      console.log('OWH decrypt output:', output);
+
+      // Persist paths
+      this.settings.wechatDataDir = wechatDir;
+      this.settings.decryptedDbDir = outputDir;
+      await this.saveSettings();
+
+      new Notice(`OWH: 解密完成 → ${outputDir}`);
+      return true;
+    } catch (e) {
+      const errMsg = (e as Error).message;
+      console.error('OWH decrypt failed:', errMsg);
+      new Notice(`OWH: 解密失败 — ${errMsg.slice(0, 200)}`, 10000);
+      return false;
+    }
+  }
+
+  /** @deprecated kept for backward compat — use decryptDatabases() */
+  async decryptDatabasesLegacy(): Promise<boolean> {
     let key = this.settings.decryptKeyHex;
 
     // Auto-extract key if not configured

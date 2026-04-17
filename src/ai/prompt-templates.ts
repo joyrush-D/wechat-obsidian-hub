@@ -151,6 +151,81 @@ ${clusteredFindings}
 }
 
 /**
+ * Pattern of Life: per-person daily summary across conversations.
+ * For 5-10 most important people, show what they said today across all groups.
+ */
+export function buildPatternOfLifePrompt(allMessages: string, importantPeople: string): string {
+  return `你是行为画像分析员（Pattern of Life Analysis）。
+
+任务：从今日所有微信消息中，为以下重要联系人生成"每日动态画像"：
+${importantPeople}
+
+每个人输出格式：
+### [姓名 · 信源等级]
+- **今日活跃度**: 高/中/低 (说了多少条/在几个群)
+- **关注话题**: 列 2-3 个
+- **关键发言**: 最有信息量的一句话引用
+- **情绪/态度**: 平静/兴奋/抱怨/紧迫... (基于语气判断)
+- **异常**: 与平时模式不同的地方（如突然活跃、突然沉默、罕见话题）
+
+只为提到的这些人生成画像。其他人不需要。中文输出。如果某人今天没说话，写"今日无发言"。
+
+消息数据:
+${allMessages}`;
+}
+
+/**
+ * Time-based situational report (SITREP).
+ * Shows what happened morning / afternoon / evening.
+ */
+export function buildSitrepPrompt(allMessages: string): string {
+  return `你是值班分析员，按时段做今日态势报告（SITREP）。
+
+输出格式：
+
+## ☀️ 上午 (06:00-12:00)
+最重要的 1-2 件事，每条一句话
+
+## 🌤 下午 (12:00-18:00)
+最重要的 1-2 件事
+
+## 🌙 晚上 (18:00-24:00)
+最重要的 1-2 件事
+
+## 🌌 深夜 (00:00-06:00)
+若有异常活动，列出。否则写"无异常"
+
+只列**真正发生的事**（决策、争论、事件、关键分享），不列日常聊天。中文输出。
+
+消息数据:
+${allMessages}`;
+}
+
+/**
+ * Cross-conversation network analysis.
+ * Finds bridge nodes (people active across multiple groups) and clustering patterns.
+ */
+export function buildNetworkAnalysisPrompt(crossGroupData: string): string {
+  return `你是社交网络分析师，找出今日跨群关键节点。
+
+输入：每个发言人在哪些群活跃。
+
+输出：
+## 🌉 桥接节点 (Bridge Nodes)
+列出在 2 个以上群活跃的人物：
+- **[姓名]**: 出现在 [群A], [群B]，主要把什么信息从 A 带到 B / 在 B 引发了什么讨论
+
+## 🔁 跨群同步话题
+今天在多个群同时讨论的话题：
+- **[话题]**: [群A][群B][群C] 都在讨论，主要观点对比
+
+只列**真有跨群关联**的，没有就写"今日无显著跨群关联"。中文输出。
+
+数据:
+${crossGroupData}`;
+}
+
+/**
  * Tearline: ultra-condensed 30-second summary.
  * For when the boss only has 30 seconds.
  */
