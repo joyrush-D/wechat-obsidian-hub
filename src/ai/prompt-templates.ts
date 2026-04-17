@@ -5,7 +5,82 @@
  */
 
 /**
- * Stage 2: per-conversation entity extraction.
+ * DIRECT SYNTHESIS mode — single-pass briefing.
+ * With large context models (100K+ tokens), bypass extraction/cluster stages entirely.
+ * Let the LLM see ALL raw messages and do the full analysis in ONE call.
+ * This avoids information loss from cascaded summarization.
+ */
+export function buildDirectSynthesisPrompt(
+  date: string,
+  allMessages: string,
+  metaStats: string,
+  userWxid: string = '',
+): string {
+  return `你是情报分析员，以美军 PDB（总统每日简报）标准为决策者（你的领导）撰写日报。
+
+【输入】${metaStats}
+${userWxid ? `用户标识：${userWxid}（这是"你"/"领导"）` : ''}
+
+【严格纪律 - ICD 203】
+1. **结论前置**：每段第一句给结论
+2. **估测词汇**：只用 [几乎肯定]/[高度可能]/[可能]/[五五开]/[不太可能]/[极不可能]
+3. **标注信源**：每个判断注明来源（谁说的、哪个对话）
+4. **严格聚类**：同一主题必须有共享实体（公司/产品/事件）—— 不相关的事绝不归一类
+5. **第十人**：强制提出一个反方假设
+6. **Bellingcat**：关键判断附"如何独立验证"
+
+【输出结构】
+
+# 微信日报 ${date}
+
+## 🎯 30 秒速读
+3 条最重要的，每条一句话 + 置信度。
+
+## 📍 直接关乎你（@Mentions / Action Required）
+列出所有直接 @ 领导、1对1私信、紧急求助、需要回应的消息。按紧急度（🔴紧急/🟡重要/🟢留意）。格式：
+- 🔴/🟡/🟢 **[人名]** 在 [对话]: "原话摘要" → 建议回复要点
+
+如果真的没有，写"今日无人直接 @ 你"（别编造）。
+
+## 📰 今日要闻（按具体主题）
+每个主题必须是具体实体/事件（如"领克UI规范更新"而不是"业务讨论"）。
+### [具体主题]
+**涉及**: 哪些对话提到
+**核心**: 一句话结论 [置信度]
+💬 引用: "..." — [人名]
+🧠 分析: 为什么值得关注
+
+## 🧠 关键判断
+2-4 条跨主题的判断：
+1. **[置信度]** 判断 — 依据：... — 如何验证：...
+
+## 🤔 反方观点（第十人）
+> 如果上述主要判断其实是错的，会是什么情况？
+
+## 👥 重要人物动态
+高频或与领导关系密切的 3-5 人，今日做了什么/说了什么：
+- **[人名]**: 主要动态 / 最关键一句话
+
+## 🛡️ 可疑信息（Reflexive Control）
+如有单一来源的重大断言、缺乏基础率的数字、或协调投放特征的信息，标出。没有就写"今日无显著操纵特征"。
+
+## 🔍 明日关注
+2-3 个值得盯的信号。
+
+## 🔗 资源
+按主题归类的真实链接（跳过"版本不支持"）。
+
+严格按上述格式。中文。不要前言后语。
+
+---
+
+【今日全部消息（按对话分组）】
+
+${allMessages}`;
+}
+
+/**
+ * Stage 2: per-conversation entity extraction (legacy, for small-context fallback).
  * Output is dense structured Markdown, not prose.
  */
 export function buildExtractionPrompt(conversationName: string, messages: string): string {
@@ -464,37 +539,46 @@ ${fullBriefing}
 }
 
 /**
- * Reflexive Control Assessment.
- * Identify messages that might be deliberately planted / psychological ops.
- * Origin: Soviet military science, now central to Russian info ops doctrine.
+ * Reflexive Control Assessment — CONSERVATIVE version.
+ * Only flags TRULY suspicious patterns. Default to "nothing suspicious".
  */
 export function buildReflexiveControlPrompt(clusteredFindings: string): string {
-  return `你是反制信息操纵分析员（Reflexive Control Analyst）。
+  return `你是反制信息操纵分析员。任务：识别**真正**可能被故意投放的信息。
 
-【任务】审查以下今日信息，识别可能是**有意投放**或存在**操纵意图**的内容。
+【极重要 - 必读】
+默认假设：今日信息**没有**被操纵。
+只在出现**强证据**时才标记。**绝对不要编造关联**。
+"两件事在同一群出现" ≠ 它们有关系。
+"某人说了一个观点" ≠ 这是操纵。
 
-【识别信号】
-- 📢 来源单一但断言肯定（缺少第二来源但说得斩钉截铁）
-- 🎯 明显迎合听众偏好（说你爱听的话）
-- 📊 数字/统计缺少出处或夸大
-- 🗓️ 时机可疑（在某决策前夕突然出现的"信息"）
-- 🔄 同一论调在多群同时出现但来源不同（协调投放特征）
-- 🏷️ 情绪煽动性词汇（用来激发情绪而非传递事实）
-- 🕵️ 匿名或半匿名来源做强断言
+【强证据信号（缺一不可）】
+只有同时满足以下 2 项以上才能标记：
+- 📢 单一来源对重大事件做斩钉截铁断言
+- 🔄 完全相同的论调出现在 ≥3 个独立来源（疑似协调投放）
+- 📊 关键数字无出处但被反复引用
+- 🗓️ 信息出现的时机正好对你的某决策有特定影响
+- 🏷️ 同一信源在短时间内多次推动某结论
+
+【禁止的标记原因】
+- ❌ "在同一群同时出现两个不同话题" — 这只是巧合
+- ❌ "某人发了链接但没解释" — 群里发链接很正常
+- ❌ "信息缺少独立验证" — 99%的群聊信息都缺少独立验证
+- ❌ 任何形式的"利用 X 掩护 Y" 推测 — 必须有明确证据
 
 【输出格式】
 ## 🛡️ 操纵风险评估
 
-### 疑似被投放信息
-如果发现可疑内容：
-- **[信息摘要]**
-  - 可疑信号: 上述哪一项或几项
-  - 操纵概率: 高/中/低
-  - 建议: 独立验证 / 延迟行动 / 忽略
+如果**真的没发现强证据**（这是最常见的情况）：
+> 本日未发现显著操纵特征。
 
-如果没发现显著疑点，写："本日信息未发现显著操纵特征，但仍建议关键决策前多源验证。"
+如果发现强证据：
+### 可疑信号 1
+- **信息**: 具体引用
+- **可疑原因**: 必须列出至少 2 个上面的强证据信号
+- **来源**: 谁/哪个对话
+- **建议**: 独立验证途径
 
-只评估**明显可疑**的，不要疑神疑鬼。中文输出。
+宁可什么都不标记，也不要编造关联。中文输出。
 
 待评估内容：
 ${clusteredFindings}`;

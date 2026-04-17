@@ -9,6 +9,7 @@ import {
   buildShareableTearlinePrompt,
   buildReflexiveControlPrompt,
   buildPatternOfLifePromptV2,
+  buildDirectSynthesisPrompt,
 } from './prompt-templates';
 import {
   type SourceTrustData,
@@ -44,9 +45,11 @@ export class BriefingGenerator {
       skipEmoji: true,
       skipSystemMessages: true,
       enableTearline: true,
-      enableShareableTearline: true,
-      enableBiasAudit: true,
-      enableReflexiveControl: true,
+      // Default OFF for these to reduce LLM call count and avoid model crashes:
+      // (User can opt in via plugin settings)
+      enableShareableTearline: false,
+      enableBiasAudit: false,
+      enableReflexiveControl: false,
       enablePatternOfLife: true,
       ...options,
     };
@@ -99,6 +102,93 @@ export class BriefingGenerator {
       lines.push(line);
     }
     return lines.join('\n');
+  }
+
+  /**
+   * Build a mechanical (no-LLM) brief when synthesis fails.
+   * Pulls real value from raw messages instead of returning empty template.
+   */
+  private buildMechanicalFallback(
+    date: string,
+    groups: Map<string, ParsedMessage[]>,
+    metaStats: string,
+    errorMsg: string,
+  ): string {
+    const sections: string[] = [
+      `# 微信日报 ${date}`,
+      `> ⚠️ AI 合成失败 (${errorMsg.slice(0, 100)})`,
+      `> 以下是程序化整理的概览，请重新加载 LM Studio 模型后再生成完整版`,
+    ];
+
+    // Top 10 most active conversations
+    const top = [...groups.entries()].slice(0, 10);
+    sections.push(`\n## 📊 今日最活跃 ${top.length} 个对话`);
+    for (const [name, msgs] of top) {
+      const senders = new Set(msgs.map(m => m.sender));
+      const types = new Set(msgs.map(m => m.type));
+      const last = msgs[msgs.length - 1];
+      const lastTime = last.time.toTimeString().slice(0, 5);
+      sections.push(
+        `### ${name} (${msgs.length} 条 / ${senders.size} 人 / 最后 ${lastTime})\n` +
+        `**类型**: ${[...types].join(', ')}\n` +
+        `**最后一句**: ${last.sender}: ${last.text.slice(0, 100).replace(/\n/g, ' ')}`,
+      );
+    }
+
+    // All resources/links from today
+    const links: string[] = [];
+    for (const [name, msgs] of groups) {
+      for (const m of msgs) {
+        if (m.type === 'link' && m.extra.url && m.extra.unsupported !== '1') {
+          const desc = m.extra.description || '';
+          links.push(`- **[${m.sender} @ ${name}]** ${m.text} ${desc ? '— ' + desc : ''} (${m.extra.url})`);
+        }
+      }
+    }
+    if (links.length > 0) {
+      sections.push(`\n## 🔗 今日所有链接 (${links.length} 条)`);
+      sections.push(...links.slice(0, 30));
+    }
+
+    sections.push(`\n## 📊 元数据\n${metaStats}`);
+    return sections.join('\n\n');
+  }
+
+  /**
+   * Persist a daily record to the extraction store.
+   * Used by weekly/topic briefs to look up history.
+   * In Direct Synthesis mode, we save the formatted message text per conversation
+   * (not LLM-summarized), so future cross-day analyses see the real content.
+   */
+  private persistDailyRecord(
+    date: string,
+    groups: Map<string, ParsedMessage[]>,
+    allMessagesText: string,
+  ): void {
+    const store = this.options.extractionStore;
+    if (!store) return;
+
+    const entries = [...groups.entries()].map(([name, msgs]) => {
+      const lastTs = msgs.length > 0 ? Math.max(...msgs.map(m => Math.floor(m.time.getTime() / 1000))) : 0;
+      const conversationId = msgs[0]?.conversationId || '';
+      // Save the formatted conversation as "extracted" (it IS the source of truth in direct mode)
+      const extracted = this.formatConversation(name, msgs);
+      return {
+        conversationName: name,
+        conversationId,
+        msgCount: msgs.length,
+        lastMsgTimestamp: lastTs,
+        cacheKey: `${name}|${msgs.length}|${lastTs}`,
+        extracted,
+        extractedAt: new Date().toISOString(),
+      };
+    });
+
+    try {
+      store.saveAll(date, entries);
+    } catch (e) {
+      console.error('OWH: Failed to persist daily record:', e);
+    }
   }
 
   /**
@@ -500,12 +590,15 @@ export class BriefingGenerator {
   }
 
   /**
-   * Full intel pipeline (5 stages):
-   * 1. TRIAGE  → filter noise
-   * 2. EXTRACT → per-conversation structured intel
-   * 3. CLUSTER → compress into cross-conversation themes
-   * 4. SYNTHESIZE → PDB-style brief
-   * 5. ENRICH → Tearline (30-sec) + Bias Audit
+   * Direct Synthesis pipeline — single-pass briefing on RAW messages.
+   * Avoids cascaded summarization information loss.
+   * Requires large context model (~100K+ tokens).
+   *
+   * Steps:
+   * 1. TRIAGE (mechanical, no LLM): filter noise
+   * 2. SPLIT (mechanical, no LLM): group by conversation, format with metadata
+   * 3. SYNTHESIZE (1 LLM call): full PDB brief from raw messages
+   * 4. ENRICH (parallel LLM calls): Tearline, Pattern of Life, Reflexive Control, etc.
    */
   async generateProgressive(
     messages: ParsedMessage[],
@@ -540,33 +633,40 @@ export class BriefingGenerator {
       `> **📡 数据范围**: ${fmt(earliestMsgTime)} → ${fmt(latestMsgTime)} (最新消息距今: ${freshness})\n` +
       `> **📊 统计**: ${totalConversations} 个活跃对话, ${triaged.length} 条有效消息（已过滤 ${messages.length - triaged.length} 条噪音）\n\n`;
 
-    await onProgress(header + `_🔍 阶段 1/5: 信号分流完成_`, false);
+    await onProgress(header + `_🔍 阶段 1/3: 信号分流完成_`, false);
 
-    // Stage 2: extract (with persistent cache)
-    // Use date YYYY-MM-DD for cache key, regardless of full datetime label
-    const cacheDate = date.slice(0, 10);
-    const extractions = await this.extractAll(
-      groups,
-      llmClient,
-      async (msg) => {
-        await onProgress(header + `_${msg}_`, false);
-      },
-      cacheDate,
-    );
-
-    // Stage 3: cluster
-    const clustered = await this.cluster(
-      extractions,
-      llmClient,
-      async (msg) => {
-        await onProgress(header + `_${msg}_`, false);
-      },
-    );
-
-    // Stage 4: synthesize
-    await onProgress(header + `_🧠 阶段 4/5: 按 PDB 标准合成简报_`, false);
+    // Stage 2: SPLIT (mechanical, no LLM) — format raw messages by conversation
+    const allMessagesText = this.formatMessagesForAI(triaged);
     const metaStats = `- 数据日期: ${date}\n- 总消息: ${totalMessages}, 对话: ${totalConversations}\n- 信源库规模: ${Object.keys(this.trust.sources).length}`;
-    const mainBrief = await this.synthesize(clustered, llmClient, date, metaStats, extractions);
+
+    // Hard cap input to ~80K chars (leaves room for prompt overhead within 262K context)
+    const MAX_DIRECT_INPUT = 80000;
+    const trimmedAllMessages = allMessagesText.length > MAX_DIRECT_INPUT
+      ? allMessagesText.slice(0, MAX_DIRECT_INPUT) + '\n\n...(超出限制已截断)'
+      : allMessagesText;
+
+    await onProgress(header + `_🧠 阶段 2/3: 直接合成简报 (单次 LLM 调用，输入 ${trimmedAllMessages.length} 字符)_`, false);
+
+    // Stage 3: SYNTHESIZE — single direct synthesis on raw messages
+    let mainBrief: string;
+    let synthesisFailed = false;
+    try {
+      const directPrompt = buildDirectSynthesisPrompt(date, trimmedAllMessages, metaStats, this.options.userWxid);
+      mainBrief = await llmClient.complete(directPrompt);
+      if (!mainBrief || mainBrief.length < 100) {
+        throw new Error('LLM 返回内容过短，可能模型崩溃');
+      }
+    } catch (e) {
+      console.error('Direct synthesis failed:', e);
+      synthesisFailed = true;
+      // Build a structured fallback that preserves raw value:
+      // - top 10 active conversations summarized mechanically
+      // - all message types broken down
+      mainBrief = this.buildMechanicalFallback(date, groups, metaStats, (e as Error).message);
+    }
+
+    // Save extraction record for accumulation layer (used by weekly/topic briefs)
+    this.persistDailyRecord(date.slice(0, 10), groups, allMessagesText);
 
     // Stage 5: enrich (parallel-ish: Tearline, Bias Audit, Reflexive Control, Pattern of Life, Shareable)
     let tearline = '';
@@ -587,7 +687,8 @@ export class BriefingGenerator {
     if (this.options.enableReflexiveControl) {
       await onProgress(header + `_🛡️ 阶段 5: 反操纵评估_`, false);
       try {
-        reflexive = await llmClient.complete(buildReflexiveControlPrompt(clustered.slice(0, 20000)));
+        // Use the main brief as input (already analyzed) — avoids hallucinations from raw clutter
+        reflexive = await llmClient.complete(buildReflexiveControlPrompt(mainBrief.slice(0, 15000)));
       } catch (e) {
         console.error('Reflexive control failed:', e);
       }
