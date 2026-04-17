@@ -26,6 +26,13 @@ function today(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+/** Format current datetime as "YYYY-MM-DD HH:MM". */
+function nowStamp(): string {
+  const d = new Date();
+  const dateStr = d.toLocaleString('zh-CN', { hour12: false }).replace(/\//g, '-');
+  return dateStr;
+}
+
 /**
  * Compress daily extractions to a succinct string representation.
  * Each day is one bloc with conversation list + extractions.
@@ -89,9 +96,10 @@ export async function generateWeeklyRollup(
   const dateRange = `${from} → ${to} (${dailies.length} 天, ${totalConvos} 个对话抽取)`;
 
   try {
-    return await llmClient.complete(buildWeeklyRollupPrompt(dateRange, trimmed));
+    const body = await llmClient.complete(buildWeeklyRollupPrompt(dateRange, trimmed));
+    return `> 🕐 **报告生成时间**: ${nowStamp()}\n> 📅 **数据范围**: ${dateRange}\n\n${body}`;
   } catch (e) {
-    return `# 微信周报 ${dateRange}\n\n> 合成失败: ${(e as Error).message}\n\n## 原始数据汇总\n\n${trimmed.slice(0, 3000)}...`;
+    return `# 微信周报 ${dateRange}\n\n> 🕐 生成时间: ${nowStamp()}\n> 合成失败: ${(e as Error).message}\n\n## 原始数据汇总\n\n${trimmed.slice(0, 3000)}...`;
   }
 }
 
@@ -129,9 +137,10 @@ export async function generateTopicBrief(
   const dateRange = `${from} → ${to}`;
 
   try {
-    return await llmClient.complete(buildTopicBriefPrompt(topic, dateRange, trimmed));
+    const body = await llmClient.complete(buildTopicBriefPrompt(topic, dateRange, trimmed));
+    return `> 🕐 **报告生成时间**: ${nowStamp()}\n> 📅 **分析范围**: ${dateRange}\n> 🎯 **主题**: ${topic}\n\n${body}`;
   } catch (e) {
-    return `# 专题简报: ${topic}\n\n> 合成失败: ${(e as Error).message}\n\n命中 ${filtered.length} 天 / ${totalConvos} 个对话\n\n原始过滤数据：\n\n${trimmed.slice(0, 3000)}...`;
+    return `# 专题简报: ${topic}\n\n> 🕐 生成时间: ${nowStamp()}\n> 合成失败: ${(e as Error).message}\n\n命中 ${filtered.length} 天 / ${totalConvos} 个对话\n\n原始过滤数据：\n\n${trimmed.slice(0, 3000)}...`;
   }
 }
 
@@ -168,9 +177,10 @@ export async function runACHAnalysis(
     : filteredData;
 
   try {
-    return await llmClient.complete(buildACHPrompt(topic, trimmed));
+    const body = await llmClient.complete(buildACHPrompt(topic, trimmed));
+    return `> 🕐 **报告生成时间**: ${nowStamp()}\n> 📅 **分析范围**: ${from} → ${to}\n> 🧮 **ACH 主题**: ${topic}\n\n${body}`;
   } catch (e) {
-    return `# ACH 分析: ${topic}\n\n> 合成失败: ${(e as Error).message}\n\n命中 ${filtered.length} 天 / ${totalConvos} 个对话`;
+    return `# ACH 分析: ${topic}\n\n> 🕐 生成时间: ${nowStamp()}\n> 合成失败: ${(e as Error).message}\n\n命中 ${filtered.length} 天 / ${totalConvos} 个对话`;
   }
 }
 

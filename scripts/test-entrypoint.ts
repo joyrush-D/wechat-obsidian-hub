@@ -22,6 +22,19 @@ const TODAY = new Date().toISOString().slice(0, 10);
 const LM_ENDPOINT = process.env.LM_ENDPOINT || 'http://localhost:1234/v1';
 
 async function main() {
+  // Always refresh decrypted DBs first (mimics plugin behavior)
+  const { execSync } = await import('child_process');
+  console.log('Refreshing decrypted databases...');
+  try {
+    execSync(`cd ${JSON.stringify(join(HOME, 'wechat-decrypt'))} && python3 decrypt_db.py`, {
+      timeout: 120000,
+      stdio: 'pipe',
+    });
+    console.log('Decryption refreshed.');
+  } catch (e) {
+    console.error('Decryption failed (using cached data):', (e as Error).message.slice(0, 100));
+  }
+
   const connector = new DbConnector();
   await connector.init();
 

@@ -142,7 +142,8 @@ export default class OWHPlugin extends Plugin {
           const store = new ExtractionStore(process.env.HOME || '');
           new Notice('OWH: 正在生成周报...');
           const brief = await generateWeeklyRollup(store, llmClient, 7);
-          const slug = `weekly-${new Date().toISOString().slice(0, 10)}`;
+          const now = new Date();
+          const slug = `weekly-${now.toISOString().slice(0, 10)}-${now.toTimeString().slice(0, 5).replace(':', '')}`;
           await this.saveBriefing(slug, brief);
           new Notice(`OWH: 周报已生成 → ${this.settings.briefingFolder}/${slug}.md`, 6000);
         } catch (err) {
@@ -173,7 +174,8 @@ export default class OWHPlugin extends Plugin {
           new Notice(`OWH: 正在生成"${topic}"专题简报 (过去 ${daysNum} 天)...`);
           const brief = await generateTopicBrief(store, llmClient, topic, daysNum);
           const safeName = topic.replace(/[\\/:*?"<>|]/g, '_').slice(0, 40);
-          const slug = `topic-${safeName}-${new Date().toISOString().slice(0, 10)}`;
+          const now = new Date();
+          const slug = `topic-${safeName}-${now.toISOString().slice(0, 10)}-${now.toTimeString().slice(0, 5).replace(':', '')}`;
           await this.saveBriefing(slug, brief);
           new Notice(`OWH: 专题简报已生成 → ${this.settings.briefingFolder}/${slug}.md`, 6000);
         } catch (err) {
@@ -206,7 +208,8 @@ export default class OWHPlugin extends Plugin {
           new Notice(`OWH: 正在对"${topic}"做 ACH 矩阵分析...`);
           const brief = await runACHAnalysis(store, llmClient, topic, daysNum);
           const safeName = topic.replace(/[\\/:*?"<>|]/g, '_').slice(0, 40);
-          const slug = `ach-${safeName}-${new Date().toISOString().slice(0, 10)}`;
+          const now = new Date();
+          const slug = `ach-${safeName}-${now.toISOString().slice(0, 10)}-${now.toTimeString().slice(0, 5).replace(':', '')}`;
           await this.saveBriefing(slug, brief);
           new Notice(`OWH: ACH 分析已生成 → ${this.settings.briefingFolder}/${slug}.md`, 6000);
         } catch (err) {
