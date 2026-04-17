@@ -1,5 +1,58 @@
 # Changelog
 
+## [0.3.0] - 2026-04-18
+
+### Added — Multimodal (voice + image)
+- **Voice transcription** via local whisper.cpp server
+  - New modules: WhisperClient, VoiceCache (content-hashed), VoiceProcessor
+  - SilkDecoder wraps `silk_v3_decoder` CLI to convert WeChat .silk → .wav
+  - Helper script `scripts/start-whisper-server.sh` for one-line Mac setup
+- **Image analysis** via OCR (screenshots/documents) or VLM (photos/emojis)
+  - New modules: OcrClient (RapidOCR-compatible), VlmClient (LM Studio multimodal)
+  - ImageRouter heuristic classifier: aspect ratio > 1.8 or screenshot-like
+    filename → OCR, else VLM
+  - Per-route content-hashed caching (ocr:hash vs vlm:hash)
+- **WeChatFileLocator** scans media root to resolve voice/image files from
+  message metadata (localId / md5 hints)
+- **MediaEnhancer** orchestrates all of the above, best-effort — failures
+  preserve original `[voice]` / `[image]` placeholders
+
+### Added — Identity consistency (basic analyst function)
+- **IdentityResolver.groupAliases** — now stores `Map<groupId, alias>` per
+  person instead of flat Set, preserving which nickname belongs to which group
+- **IdentityFormatter** (new module):
+  - `compactAnnotation()` — inline "（ID: wxid；X 群: A · Y 群: B）" when a
+    person has ≥2 aliases
+  - `buildAliasIndex()` — reference table at top of briefing listing every
+    multi-alias person with their wxid + per-group nicknames
+- Applied across all outputs: briefing header, Pattern of Life rows, Group
+  Dossier top speakers (de-duped by wxid, no longer double-counts same person)
+
+### Added — Product vision doc
+- `docs/VISION.md` — reframes product as domain-agnostic intelligence analysis
+  Agent (WeChat = first data source, Obsidian = first host). Five moat
+  capabilities, four-layer architecture, STIX-inspired six-element object model.
+- `docs/research/` — six research reports covering WeChat user pain points,
+  local audio/video processing, Obsidian IM plugin ecosystem, intelligence
+  methodology, agent frameworks, and cross-domain applications.
+
+### Added — Test infrastructure
+- `npm run verify` — aggregated typecheck + test + build
+- 296 tests total (up from 151 at v0.2.1), 100% green
+- New test suites: identity-formatter, whisper-client, voice-cache,
+  voice-processor, image-router, ocr-client, vlm-client, image-processor,
+  wechat-file-locator, silk-decoder, media-enhancer
+- Fixed 7 pre-existing test failures (behavioral drift since last update)
+
+### Added — Settings
+- Multimodal section with toggles, endpoints, language hints, test buttons
+- Media cache directory
+- WeChat media root (auto-detected from xwechat_files layout)
+
+### Changed
+- TypeScript config: `"types": ["node"]` to silence indirect @types noise,
+  ambient sql.js declarations in `src/types/sql.js.d.ts`
+
 ## [0.2.1] - 2026-04-17
 
 ### Changed
