@@ -346,21 +346,36 @@ export default class OWHPlugin extends Plugin {
     const contactDb = this.dbConnector.loadFromBytes(new Uint8Array(contactData));
     const contactReader = new ContactReader(contactDb);
 
-    // Find the group wxid whose display name matches
+    // Find the group wxid whose display name matches (fuzzy: trim + case-insensitive)
+    const target = displayName.trim().toLowerCase();
     let groupWxid = '';
+    let matchedName = '';
     for (const c of contactReader.getAllContacts()) {
-      const name = c.remark || c.nickName || c.username;
-      if (name === displayName) {
+      const name = (c.remark || c.nickName || c.username).trim().toLowerCase();
+      if (name === target) {
         groupWxid = c.username;
+        matchedName = c.remark || c.nickName || c.username;
         break;
+      }
+    }
+    // Fall back to partial match (in case file name got truncated or slightly modified)
+    if (!groupWxid) {
+      for (const c of contactReader.getAllContacts()) {
+        const name = (c.remark || c.nickName || c.username).trim().toLowerCase();
+        if (name.includes(target) || target.includes(name)) {
+          groupWxid = c.username;
+          matchedName = c.remark || c.nickName || c.username;
+          break;
+        }
       }
     }
 
     if (!groupWxid) {
-      await this.app.vault.modify(file, `# ${displayName}\n\n> 未在联系人表中找到名为 "${displayName}" 的群/联系人。\n> 请确认群名拼写正确。`);
+      await this.app.vault.modify(file, `# ${displayName}\n\n> 未在联系人表中找到名为 "${displayName}" 的群/联系人。\n> 请确认群名拼写正确。\n\n**调试信息**：\n- 已查询 ${contactReader.count()} 个联系人\n- 尝试过精确匹配 + 模糊匹配（trim + 大小写不敏感）\n- 如果群名字里包含特殊字符（如 emoji），可能需要手动在 Obsidian 中重命名这个笔记`);
       contactDb.close();
       return;
     }
+    console.log(`OWH: group dossier matched "${displayName}" → "${matchedName}" (${groupWxid})`);
 
     // Find message DB
     const msgDir = join(dir, 'message');

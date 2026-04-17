@@ -172,6 +172,32 @@ async function main() {
       console.log(`  ${f}: ${size} bytes`);
     }
   }
+
+  // === SECOND TEST: simulate clicking a [[WeChat-Groups/xxx]] wikilink ===
+  console.log('\n=== Testing lazy group dossier population ===');
+  const groupsDir = join(VAULT_DIR, 'WeChat-Groups');
+  mkdirSync(groupsDir, { recursive: true });
+
+  const testGroup = '印尼 七重 领科 for geely bbc';
+  const dossierPath = join(groupsDir, `${testGroup}.md`);
+
+  // Step 1: simulate Obsidian creating an empty note when user clicks wikilink
+  writeFileSync(dossierPath, '', 'utf-8');
+  console.log(`Created empty note: ${dossierPath}`);
+
+  // Step 2: simulate the file-open event — call plugin's populateGroupDossier directly
+  const mockFile = { path: `WeChat-Groups/${testGroup}.md`, basename: testGroup };
+  const start2 = Date.now();
+  await instance.populateGroupDossier(mockFile);
+  const elapsed2 = ((Date.now() - start2) / 1000).toFixed(1);
+
+  const size = statSync(dossierPath).size;
+  console.log(`Dossier generated in ${elapsed2}s, ${size} bytes`);
+
+  // Show the first 30 lines of the dossier
+  console.log('\n--- DOSSIER PREVIEW ---');
+  const content = readFileSync(dossierPath, 'utf-8');
+  console.log(content.split('\n').slice(0, 30).join('\n'));
 }
 
 main().catch(e => {
