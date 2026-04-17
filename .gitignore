@@ -17,3 +17,4 @@ scripts/__pycache__/
 # Test output
 WeChat-Briefings/
 *.db
+all_keys.json
