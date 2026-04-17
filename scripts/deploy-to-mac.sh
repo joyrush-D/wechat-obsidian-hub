@@ -1,21 +1,22 @@
 #!/bin/bash
 set -e
 
-VAULT_DIR="${HOME}/Documents"
-PLUGIN_DIR="$VAULT_DIR/.obsidian/plugins/wechat-obsidian-hub"
+# NOTE: Escaped \$HOME so the variable expands on the REMOTE Mac side,
+# not on the local host (which might be Linux with /home/... vs Mac /Users/...).
+MAC_PLUGIN_SUBPATH="Documents/.obsidian/plugins/wechat-obsidian-hub"
 
 echo "Building plugin..."
 npm run build
 
 echo "Deploying to MacBook..."
-ssh mac "mkdir -p '$PLUGIN_DIR'"
-scp main.js manifest.json mac:"$PLUGIN_DIR/"
+ssh mac "mkdir -p \"\$HOME/$MAC_PLUGIN_SUBPATH\""
+scp main.js manifest.json "mac:\$HOME/$MAC_PLUGIN_SUBPATH/"
 
 # Copy styles.css if it exists
-[ -f styles.css ] && scp styles.css mac:"$PLUGIN_DIR/" || true
+[ -f styles.css ] && scp styles.css "mac:\$HOME/$MAC_PLUGIN_SUBPATH/" || true
 
 echo "Verifying deployment..."
-ssh mac "ls -la '$PLUGIN_DIR/'"
+ssh mac "ls -la \"\$HOME/$MAC_PLUGIN_SUBPATH/\""
 
 echo ""
 echo "Done! In Obsidian on Mac:"

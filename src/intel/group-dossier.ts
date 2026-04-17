@@ -9,7 +9,6 @@ import type { MessageReader } from '../db/message-reader';
 import type { ParsedMessage, Contact } from '../types';
 import { parseMessage } from '../parser/index';
 import type { IdentityResolver } from './identity-resolver';
-import { compactAnnotation } from './identity-formatter';
 
 export interface GroupDossierInput {
   groupWxid: string;           // real wxid like "58263875481@chatroom"
@@ -148,17 +147,13 @@ export function buildGroupDossier(input: GroupDossierInput): string {
   }
   lines.push('');
 
-  // 活跃发言人 — annotate multi-alias people with wxid + other-group aliases
+  // 活跃发言人 — dedup happens by wxid upstream (speakerStats), names shown clean.
+  // IdentityResolver ensures same person counted once across group nicknames.
   lines.push('## 👥 活跃发言人 Top 10');
   lines.push('');
-  for (const [wxid, info] of topSpeakers) {
+  for (const [, info] of topSpeakers) {
     const pct = Math.round((info.count / parsed.length) * 100);
-    let annotation = '';
-    if (identityResolver) {
-      const ident = identityResolver.get(wxid);
-      if (ident) annotation = compactAnnotation(ident, identityResolver);
-    }
-    lines.push(`- **${info.name}**${annotation}: ${info.count} 条 (${pct}%)`);
+    lines.push(`- **${info.name}**: ${info.count} 条 (${pct}%)`);
   }
   lines.push('');
 

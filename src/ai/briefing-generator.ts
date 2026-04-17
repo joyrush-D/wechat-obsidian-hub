@@ -22,7 +22,6 @@ import {
 } from '../intel/source-trust';
 import { ExtractionStore, type ExtractionEntry } from '../intel/extraction-store';
 import { IdentityResolver } from '../intel/identity-resolver';
-import { buildAliasIndex, compactAnnotation } from '../intel/identity-formatter';
 
 export interface BriefingOptions {
   skipEmoji?: boolean;
@@ -48,7 +47,9 @@ export class BriefingGenerator {
     this.options = {
       skipEmoji: true,
       skipSystemMessages: true,
-      enableTearline: true,
+      // Direct synthesis already emits its own "## 🎯 30 秒速读" section.
+      // Running a second-pass tearline compressor would duplicate it, so off by default.
+      enableTearline: false,
       // Default OFF for these to reduce LLM call count and avoid model crashes:
       // (User can opt in via plugin settings)
       enableShareableTearline: false,
@@ -353,13 +354,10 @@ export class BriefingGenerator {
       const sample = highlight ? `"${highlight.text.slice(0, 80).replace(/\n/g, ' ')}"` : '（纯多媒体/未提取文本）';
 
       const remarkTag = info.hasRemark ? ' 📌' : '';
-      // Multi-alias annotation (wxid + per-group aliases) — basic function of an analyst tool
-      let annotation = '';
-      if (resolver) {
-        const ident = resolver.get(wxid);
-        if (ident) annotation = compactAnnotation(ident, resolver);
-      }
-      lines.push(`- **${info.displayName}${remarkTag}**${annotation} — ${msgs.length} 条 · 跨 ${conversations.size} 个对话 · 最后 ${lastTime} · 类型: ${typesList}`);
+      // Identity resolution happens BEHIND THE SCENES — we don't display alias noise,
+      // we just guarantee aggregation counts the same person once regardless of which
+      // group-specific nickname they used.
+      lines.push(`- **${info.displayName}${remarkTag}** — ${msgs.length} 条 · 跨 ${conversations.size} 个对话 · 最后 ${lastTime} · 类型: ${typesList}`);
       lines.push(`  代表发言: ${sample}`);
     }
     return lines.join('\n');
@@ -875,40 +873,26 @@ export class BriefingGenerator {
     // Scan raw messages for @ mentions — this is NOT cached, always fresh
     const directMentions = this.scanUserMentions(messages);
 
-    // Build person alias index — basic function of an analyst tool.
-    // Collects wxids of people who actually appeared in today's triaged messages,
-    // then lists those with ≥2 aliases so the reader can cross-reference.
-    let aliasIndex = '';
-    if (this.options.identityResolver) {
-      const appearedWxids = new Set<string>();
-      const userIds = new Set(this.options.userIdentities || []);
-      for (const m of triaged) {
-        if (!m.senderWxid) continue;
-        if (m.senderWxid === this.options.userWxid) continue;
-        if (userIds.has(m.senderWxid)) continue;
-        appearedWxids.add(m.senderWxid);
-      }
-      aliasIndex = buildAliasIndex(appearedWxids, this.options.identityResolver);
-    }
+    // IdentityResolver does its consolidation work behind the scenes — the
+    // analyst output shows primary names only. The alias-index appendix is
+    // deliberately omitted: readers don't need the mapping, they need clean
+    // consistent aggregation.
 
     // Compose final document. Order matters for boss UX:
-    // 1. 30-sec Tearline (fastest read)
+    // 1. Second-pass Tearline (optional; skipped by default since direct synthesis
+    //    already has its own "30 秒速读" section)
     // 2. Direct @ mentions (raw scan, never cached)
-    // 3. Person alias index (reference table for multi-alias people)
-    // 4. Main brief (full PDB)
-    // 5. Pattern of Life (who said what)
-    // 6. Reflexive Control (what to question)
-    // 7. Bias Audit (self-check)
-    // 8. Shareable Tearline (team-ready, below dashed line)
+    // 3. Main brief (full PDB, its own BLUF up top)
+    // 4. Pattern of Life (who said what — names aggregated per wxid, no alias noise)
+    // 5. Reflexive Control (what to question)
+    // 6. Bias Audit (self-check)
+    // 7. Shareable Tearline (team-ready, below dashed line)
     const sections: string[] = [];
     if (tearline) {
-      sections.push(`# ⚡ 30 秒速读 — ${date}\n\n${tearline}\n\n---`);
+      sections.push(`# ⚡ 30 秒速读（压缩版） — ${date}\n\n${tearline}\n\n---`);
     }
     if (directMentions) {
       sections.push(directMentions + '\n\n---');
-    }
-    if (aliasIndex) {
-      sections.push(aliasIndex + '\n\n---');
     }
     sections.push(mainBrief);
     if (patternOfLife) {
