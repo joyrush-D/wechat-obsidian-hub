@@ -27,6 +27,7 @@ import { EvidenceStore } from './core/storage/evidence-store';
 import { buildFindingsExtractionPrompt, parseFindings } from './core/sat/finding-extractor';
 import { identityToActor } from './core/identity/actor-factory';
 import { messageToObject } from './core/messaging/object-factory';
+import { collectEvidence, runAch } from './core/sat/ach-runner';
 import type { ParsedMessage } from './types';
 
 export default class OWHPlugin extends Plugin {
@@ -250,10 +251,11 @@ export default class OWHPlugin extends Plugin {
       },
     });
 
-    // Command: ACH Analysis
+    // Command: ACH Analysis (legacy single-prompt version, kept for fallback
+    // when user has ExtractionStore data but no EvidenceStore yet)
     this.addCommand({
       id: 'run-ach-analysis',
-      name: 'Run ACH Analysis (competing hypotheses)',
+      name: 'Run ACH Analysis (legacy, single-prompt)',
       callback: async () => {
         try {
           const topic = await this.promptForInput(
@@ -281,6 +283,58 @@ export default class OWHPlugin extends Plugin {
         } catch (err) {
           console.error('OWH: ACH analysis failed', err);
           new Notice(`OWH: Error — ${(err as Error).message}`);
+        }
+      },
+    });
+
+    // Command: ACH Matrix (v0.6.0 — proper Heuer matrix with separate LLM
+    // calls for hypothesis generation and evidence marking, then mechanical
+    // diagnosticity + inconsistency scoring)
+    this.addCommand({
+      id: 'run-ach-matrix',
+      name: 'Run ACH Matrix (proper Heuer, from EvidenceStore)',
+      callback: async () => {
+        try {
+          const topic = await this.promptForInput(
+            'ACH 主题关键词（将用于检索 EvidenceStore）',
+            '例如：DeepSeek / 领克 / 加纳',
+          );
+          if (!topic) return;
+
+          const llmClient = new LlmClient(this.settings.aiEndpoint, this.settings.aiModel);
+          if (!(await llmClient.isAvailable())) {
+            new Notice('OWH: LM Studio 不可用');
+            return;
+          }
+
+          const storeDir = join(process.env.HOME || '', '.wechat-hub', 'evidence-store');
+          const store = new EvidenceStore(storeDir);
+          const evidence = collectEvidence(store, topic);
+          if (evidence.length < 3) {
+            new Notice(
+              `OWH: 未找到足够证据（找到 ${evidence.length} 条，需要 ≥3）。先跑一次"Generate WeChat Briefing"让 EvidenceStore 积累数据。`,
+              10000,
+            );
+            return;
+          }
+
+          new Notice(`OWH: ACH 矩阵分析"${topic}" — ${evidence.length} 条证据，开始生成假设...`);
+          const result = await runAch(topic, evidence, llmClient);
+          const safeName = topic.replace(/[\\/:*?"<>|]/g, '_').slice(0, 40);
+          const now = new Date();
+          const slug = `ach-matrix-${safeName}-${now.toISOString().slice(0, 10)}-${now.toTimeString().slice(0, 5).replace(':', '')}`;
+
+          const fullDoc = `> 🕐 生成时间: ${now.toLocaleString('zh-CN', { hour12: false })}\n> 📊 证据库: ${evidence.length} 条\n\n${result.markdown}`;
+          await this.saveBriefing(slug, fullDoc);
+          const best = result.analysis.ranking[0];
+          const bestHyp = result.analysis.matrix.hypotheses.find(h => h.id === best.hypothesisId);
+          new Notice(
+            `OWH: ACH 完成 → 最可信假设: "${bestHyp?.statement.slice(0, 40)}" (不一致分数 ${best.inconsistencyScore})`,
+            8000,
+          );
+        } catch (err) {
+          console.error('OWH: ACH matrix analysis failed', err);
+          new Notice(`OWH: ACH 矩阵分析失败 — ${(err as Error).message}`);
         }
       },
     });
