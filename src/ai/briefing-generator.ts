@@ -1,9 +1,14 @@
 import type { ParsedMessage, Contact } from '../types';
 import { LlmClient } from './llm-client';
-import { buildExtractionPrompt, buildPdbSynthesisPrompt } from './prompt-templates';
+import {
+  buildExtractionPrompt,
+  buildClusteringPrompt,
+  buildPdbSynthesisPrompt,
+  buildTearlinePrompt,
+  buildBiasAuditPrompt,
+} from './prompt-templates';
 import {
   type SourceTrustData,
-  type SourceStats,
   gradeSource,
   gradeMessage,
   formatAdmiraltyCode,
@@ -18,6 +23,8 @@ export interface BriefingOptions {
   trust?: SourceTrustData;
   contactsMap?: Map<string, Contact>;
   userWxid?: string;
+  enableTearline?: boolean;       // 30-sec ultra-condensed version
+  enableBiasAudit?: boolean;      // Heuer's 18-bias check
 }
 
 export class BriefingGenerator {
@@ -25,7 +32,13 @@ export class BriefingGenerator {
   private trust: SourceTrustData;
 
   constructor(options: BriefingOptions = {}) {
-    this.options = { skipEmoji: true, skipSystemMessages: true, ...options };
+    this.options = {
+      skipEmoji: true,
+      skipSystemMessages: true,
+      enableTearline: true,
+      enableBiasAudit: true,
+      ...options,
+    };
     this.trust = options.trust || initTrust();
   }
 
@@ -33,33 +46,34 @@ export class BriefingGenerator {
     return this.trust;
   }
 
-  /** Group filtered messages by conversation, sorted by activity. */
-  groupByConversation(messages: ParsedMessage[]): Map<string, ParsedMessage[]> {
-    const filtered = messages.filter(msg => {
+  /** Stage 1: TRIAGE — filter low-signal noise. */
+  triage(messages: ParsedMessage[]): ParsedMessage[] {
+    return messages.filter(msg => {
       if (this.options.skipEmoji && msg.type === 'emoji') return false;
       if (this.options.skipSystemMessages && msg.type === 'system') return false;
-      // Stage 1 TRIAGE: drop ultra-low-signal messages
       const text = msg.text.trim();
       if (text.length < 2) return false;
-      if (/^(嗯+|哦+|好+|哈+|对|是|ok)$/i.test(text)) return false;
+      // Filter ultra-low-signal replies
+      if (/^(嗯+|哦+|好+|哈+|对|是|ok|👍|🙏)$/i.test(text)) return false;
       return true;
     });
+  }
 
+  /** Group by conversation, sorted by activity. */
+  groupByConversation(messages: ParsedMessage[]): Map<string, ParsedMessage[]> {
     const groups = new Map<string, ParsedMessage[]>();
-    for (const msg of filtered) {
+    for (const msg of messages) {
       const key = msg.conversationName || msg.conversationId;
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key)!.push(msg);
     }
-
     return new Map([...groups.entries()].sort((a, b) => b[1].length - a[1].length));
   }
 
-  /** Format one conversation with Admiralty Code annotations on each message. */
+  /** Format a conversation with plain-Chinese source labels. */
   formatConversation(name: string, msgs: ParsedMessage[]): string {
     const contactsMap = this.options.contactsMap || new Map();
     const lines: string[] = [`## ${name} (${msgs.length}条)`];
-
     for (const msg of msgs) {
       const contact = contactsMap.get(msg.senderWxid);
       const stats = this.trust.sources[msg.senderWxid];
@@ -70,48 +84,36 @@ export class BriefingGenerator {
       const time = msg.time.toTimeString().slice(0, 5);
       let line = `[${time}] ${msg.sender} [${code}]: ${msg.text}`;
       if (msg.type === 'link' && msg.extra.description) line += ` — ${msg.extra.description}`;
-      if (msg.extra.url) line += ` (${msg.extra.url})`;
+      if (msg.extra.url && msg.extra.unsupported !== '1') line += ` (${msg.extra.url})`;
       lines.push(line);
     }
     return lines.join('\n');
   }
 
-  formatMessagesForAI(messages: ParsedMessage[]): string {
-    const groups = this.groupByConversation(messages);
-    return [...groups.entries()]
-      .map(([name, msgs]) => this.formatConversation(name, msgs))
-      .join('\n\n');
-  }
-
-  /**
-   * Format the trust summary for inclusion in the synthesis prompt.
-   */
   formatTopSourcesSummary(): string {
-    const top = getTopSources(this.trust, 15);
-    if (top.length === 0) return '(首次运行，尚无历史信源数据)';
-
-    const lines: string[] = ['| 发言人 | 信源等级 | 累计消息 | @你 | DM | 备注 |', '|---|---|---|---|---|---|'];
+    const top = getTopSources(this.trust, 10);
+    if (top.length === 0) return '(本次为首次运行，信源信任度基于联系人备注初始化)';
+    const lines: string[] = [];
     for (const s of top) {
       const grade = gradeSource(s);
-      lines.push(`| ${s.displayName} | ${grade} | ${s.totalMessages} | ${s.mentionsUser} | ${s.isInDirectMsg ? '✓' : '-'} | ${s.hasRemark ? '已备注' : '-'} |`);
+      lines.push(`- ${s.displayName}: ${grade} (${s.totalMessages}条历史)`);
     }
     return lines.join('\n');
   }
 
   /**
-   * Stage 2: extract structured intel from each conversation.
-   * Returns array of {conversation, extracted_intel_markdown}.
+   * Stage 2: per-conversation extraction.
+   * Smart batching: priority conversations solo, minor ones bundled.
    */
-  async extractFromBatches(
+  async extractAll(
     groups: Map<string, ParsedMessage[]>,
     llmClient: LlmClient,
     onProgress: (msg: string) => Promise<void>,
   ): Promise<Array<{ name: string; extracted: string; msgCount: number }>> {
     const results: Array<{ name: string; extracted: string; msgCount: number }> = [];
-
-    // Batch small conversations together to reduce LLM calls; large ones go solo.
-    const PRIORITY_THRESHOLD = 20;  // conversations with >= N msgs get individual treatment
-    const BATCH_SIZE = 80;           // small conversations grouped up to this many msgs
+    const PRIORITY_THRESHOLD = 15;
+    const BATCH_LIMIT = 80;
+    const PER_CONV_MSG_CAP = 150;
 
     const priority: Array<[string, ParsedMessage[]]> = [];
     const minor: Array<[string, ParsedMessage[]]> = [];
@@ -120,27 +122,26 @@ export class BriefingGenerator {
       (msgs.length >= PRIORITY_THRESHOLD ? priority : minor).push([name, msgs]);
     }
 
-    // Process priority conversations individually (cap at 200 msgs each to avoid model crash)
+    // Process priority conversations
     for (let i = 0; i < priority.length; i++) {
       const [name, msgs] = priority[i];
-      const trimmed = msgs.slice(-200);  // most recent 200
-      await onProgress(`📊 分析活跃对话 ${i + 1}/${priority.length}: ${name} (${trimmed.length}条)`);
-
+      const trimmed = msgs.slice(-PER_CONV_MSG_CAP);
+      await onProgress(`📊 抽取活跃对话 ${i + 1}/${priority.length}: ${name}`);
       const text = this.formatConversation(name, trimmed);
       try {
         const extracted = await llmClient.complete(buildExtractionPrompt(name, text));
         results.push({ name, extracted, msgCount: trimmed.length });
       } catch (e) {
-        results.push({ name, extracted: `> 分析失败: ${(e as Error).message}`, msgCount: trimmed.length });
+        results.push({ name, extracted: `（提取失败: ${(e as Error).message.slice(0, 80)}）`, msgCount: trimmed.length });
       }
     }
 
-    // Bundle minor conversations into batches
+    // Bundle minor conversations
     let currentBatch: Array<[string, ParsedMessage[]]> = [];
     let currentCount = 0;
     const minorBatches: Array<Array<[string, ParsedMessage[]]>> = [];
     for (const [name, msgs] of minor) {
-      if (currentCount + msgs.length > BATCH_SIZE && currentBatch.length > 0) {
+      if (currentCount + msgs.length > BATCH_LIMIT && currentBatch.length > 0) {
         minorBatches.push(currentBatch);
         currentBatch = [];
         currentCount = 0;
@@ -152,20 +153,16 @@ export class BriefingGenerator {
 
     for (let i = 0; i < minorBatches.length; i++) {
       const batch = minorBatches[i];
-      const names = batch.map(([n]) => n).join('、');
       const totalMsgs = batch.reduce((s, [, m]) => s + m.length, 0);
-
-      await onProgress(`📊 分析次要对话批次 ${i + 1}/${minorBatches.length} (${batch.length}个对话, ${totalMsgs}条)`);
-
-      const combined = batch
-        .map(([name, msgs]) => this.formatConversation(name, msgs))
-        .join('\n\n');
-
+      await onProgress(`📊 抽取次要对话批次 ${i + 1}/${minorBatches.length} (${batch.length}个)`);
+      const combined = batch.map(([n, m]) => this.formatConversation(n, m)).join('\n\n');
       try {
-        const extracted = await llmClient.complete(buildExtractionPrompt(`次要对话集合: ${names}`, combined));
-        results.push({ name: `次要对话集合 (${batch.length}个)`, extracted, msgCount: totalMsgs });
+        const extracted = await llmClient.complete(
+          buildExtractionPrompt(`次要对话集合(${batch.length}个)`, combined),
+        );
+        results.push({ name: `次要对话(${batch.length}个)`, extracted, msgCount: totalMsgs });
       } catch (e) {
-        results.push({ name: 'minor batch', extracted: `> 分析失败: ${(e as Error).message}`, msgCount: totalMsgs });
+        results.push({ name: 'minor', extracted: `（提取失败）`, msgCount: totalMsgs });
       }
     }
 
@@ -173,10 +170,146 @@ export class BriefingGenerator {
   }
 
   /**
-   * Run the full intel pipeline:
-   * 1. TRIAGE (groupByConversation filters noise)
-   * 2. ENTITY EXTRACTION (per conversation, structured)
-   * 3. SYNTHESIS (PDB-style brief from all extracted intel)
+   * Stage 3: cluster compression.
+   * Reduce 16 conversation extractions into themes (cuts tokens for synthesis).
+   */
+  async cluster(
+    extractions: Array<{ name: string; extracted: string; msgCount: number }>,
+    llmClient: LlmClient,
+    onProgress: (msg: string) => Promise<void>,
+  ): Promise<string> {
+    await onProgress(`🧩 跨对话主题聚类中...`);
+    const combined = extractions
+      .map(r => `### 来源: ${r.name} (${r.msgCount}条原始消息)\n${r.extracted}`)
+      .join('\n\n---\n\n');
+
+    // Now that context is 262K, allow much larger clustering input
+    const MAX_CLUSTER_INPUT = 60000;
+    if (combined.length <= MAX_CLUSTER_INPUT) {
+      try {
+        return await llmClient.complete(buildClusteringPrompt(combined));
+      } catch (e) {
+        console.error('Clustering failed:', e);
+        return combined;  // fallback: pass through
+      }
+    }
+
+    // Too long: split into chunks and cluster each, then merge
+    const chunks: string[] = [];
+    let buf = '';
+    for (const r of extractions) {
+      const piece = `### 来源: ${r.name}\n${r.extracted}\n\n`;
+      if (buf.length + piece.length > MAX_CLUSTER_INPUT) {
+        chunks.push(buf);
+        buf = piece;
+      } else {
+        buf += piece;
+      }
+    }
+    if (buf) chunks.push(buf);
+
+    await onProgress(`🧩 聚类输入过大，分 ${chunks.length} 块处理`);
+    const clustered: string[] = [];
+    for (let i = 0; i < chunks.length; i++) {
+      try {
+        clustered.push(await llmClient.complete(buildClusteringPrompt(chunks[i])));
+      } catch (e) {
+        clustered.push(chunks[i].slice(0, 3000));  // fallback
+      }
+    }
+    return clustered.join('\n\n');
+  }
+
+  /**
+   * Stage 4: PDB synthesis with aggressive input capping + clean fallback.
+   */
+  async synthesize(
+    clusteredText: string,
+    llmClient: LlmClient,
+    date: string,
+    metaStats: string,
+    extractions: Array<{ name: string; extracted: string; msgCount: number }>,
+  ): Promise<string> {
+    // Cap at 80K chars (~25K tokens) — well within 262K context, but reasonable for synthesis quality
+    const MAX_INPUT = 80000;
+    let trimmed = clusteredText;
+    if (trimmed.length > MAX_INPUT) {
+      trimmed = trimmed.slice(0, MAX_INPUT) + '\n\n...(已截断)';
+    }
+
+    const topSources = this.formatTopSourcesSummary();
+    const prompt = buildPdbSynthesisPrompt(date, topSources, trimmed, metaStats);
+
+    try {
+      return await llmClient.complete(prompt);
+    } catch (e) {
+      console.error('Synthesis failed:', e);
+      // Programmatic fallback: build a clean curated brief without LLM
+      return this.buildFallbackBrief(date, extractions, metaStats);
+    }
+  }
+
+  /**
+   * Build a clean structured brief when LLM synthesis fails.
+   * Aggregates @mentions, action items, resources, top topics from extractions.
+   */
+  private buildFallbackBrief(
+    date: string,
+    extractions: Array<{ name: string; extracted: string; msgCount: number }>,
+    metaStats: string,
+  ): string {
+    const sections: string[] = [`# 微信日报 ${date}\n\n> ⚠️ AI 合成阶段超时/失败，以下是程序化整理的精简版`];
+
+    // Extract @-mentions across all conversations
+    const mentions: string[] = [];
+    const actions: string[] = [];
+    const resources: string[] = [];
+    const topics: string[] = [];
+
+    for (const r of extractions) {
+      const txt = r.extracted;
+      // Extract sections by header
+      const mentionMatch = txt.match(/### @我或求助[\s\S]*?(?=###|$)/);
+      const actionMatch = txt.match(/### 行动项[\s\S]*?(?=###|$)/);
+      const resourceMatch = txt.match(/### 资源链接[\s\S]*?(?=###|$)/);
+      const topicMatch = txt.match(/### 议题[\s\S]*?(?=###|$)/);
+
+      const extractLines = (block: string | undefined) => {
+        if (!block) return [];
+        return block
+          .split('\n')
+          .filter(line => line.trim().startsWith('-') && !line.includes('无'))
+          .map(line => line.trim());
+      };
+
+      const m = extractLines(mentionMatch?.[0]);
+      const a = extractLines(actionMatch?.[0]);
+      const res = extractLines(resourceMatch?.[0]);
+      const t = extractLines(topicMatch?.[0]);
+
+      if (m.length > 0) mentions.push(`**[${r.name}]**\n${m.join('\n')}`);
+      if (a.length > 0) actions.push(`**[${r.name}]**\n${a.join('\n')}`);
+      if (res.length > 0) resources.push(`**[${r.name}]**\n${res.join('\n')}`);
+      if (t.length > 0) topics.push(`**[${r.name}]** ${t.slice(0, 3).join('; ')}`);
+    }
+
+    // Compose sections
+    sections.push(`## ⚡ 直接关乎你\n\n${mentions.length > 0 ? mentions.join('\n\n') : '今日无人直接 @ 你'}`);
+    sections.push(`## ✅ 待办与行动项\n\n${actions.length > 0 ? actions.join('\n\n') : '今日无明确行动项'}`);
+    sections.push(`## 📚 今日话题\n\n${topics.length > 0 ? topics.slice(0, 15).join('\n') : '无'}`);
+    sections.push(`## 🔗 资源链接\n\n${resources.length > 0 ? resources.join('\n\n') : '今日无分享的链接'}`);
+    sections.push(`## 📊 元数据\n${metaStats}`);
+
+    return sections.join('\n\n');
+  }
+
+  /**
+   * Full intel pipeline (5 stages):
+   * 1. TRIAGE  → filter noise
+   * 2. EXTRACT → per-conversation structured intel
+   * 3. CLUSTER → compress into cross-conversation themes
+   * 4. SYNTHESIZE → PDB-style brief
+   * 5. ENRICH → Tearline (30-sec) + Bias Audit
    */
   async generateProgressive(
     messages: ParsedMessage[],
@@ -184,22 +317,22 @@ export class BriefingGenerator {
     date: string,
     onProgress: (content: string, done: boolean) => Promise<void>,
   ): Promise<string> {
-    // Update trust data with today's observations
     if (this.options.contactsMap) {
       updateTrust(this.trust, messages, this.options.contactsMap, this.options.userWxid);
     }
 
-    const groups = this.groupByConversation(messages);
+    // Stage 1: triage
+    const triaged = this.triage(messages);
+    const groups = this.groupByConversation(triaged);
     const totalConversations = groups.size;
-    const totalMessages = messages.length;
+    const totalMessages = triaged.length;
 
-    let header = `# 微信日报 — ${date} (生成中…)\n\n`;
-    header += `> 共 ${totalConversations} 个活跃对话，${totalMessages} 条消息\n\n---\n\n`;
+    let header = `# 微信日报 ${date}\n\n> 共 ${totalConversations} 个活跃对话, ${triaged.length} 条有效消息（已过滤 ${messages.length - triaged.length} 条噪音）\n\n`;
 
-    await onProgress(header + `_🔍 Stage 1-2: 信号分流与实体提取..._`, false);
+    await onProgress(header + `_🔍 阶段 1/5: 信号分流完成_`, false);
 
-    // Stage 2: Extract structured intel from each conversation
-    const extractedResults = await this.extractFromBatches(
+    // Stage 2: extract
+    const extractions = await this.extractAll(
       groups,
       llmClient,
       async (msg) => {
@@ -207,30 +340,61 @@ export class BriefingGenerator {
       },
     );
 
-    await onProgress(header + `_🧠 Stage 5: 按情报标准合成 PDB 简报..._`, false);
+    // Stage 3: cluster
+    const clustered = await this.cluster(
+      extractions,
+      llmClient,
+      async (msg) => {
+        await onProgress(header + `_${msg}_`, false);
+      },
+    );
 
-    // Stage 5: PDB synthesis
-    const clusteredFindings = extractedResults
-      .map(r => `## ${r.name} (${r.msgCount}条原始消息)\n${r.extracted}`)
-      .join('\n\n---\n\n');
+    // Stage 4: synthesize
+    await onProgress(header + `_🧠 阶段 4/5: 按 PDB 标准合成简报_`, false);
+    const metaStats = `- 数据日期: ${date}\n- 总消息: ${totalMessages}, 对话: ${totalConversations}\n- 信源库规模: ${Object.keys(this.trust.sources).length}`;
+    const mainBrief = await this.synthesize(clustered, llmClient, date, metaStats, extractions);
 
-    const topSources = this.formatTopSourcesSummary();
-    const metaStats = `- 总消息数：${totalMessages}\n- 活跃对话数：${totalConversations}\n- 数据日期：${date}\n- 信源库规模：${Object.keys(this.trust.sources).length}`;
+    // Stage 5: enrich (Tearline + Bias Audit)
+    let tearline = '';
+    let biasAudit = '';
 
-    let finalBrief: string;
-    try {
-      finalBrief = await llmClient.complete(
-        buildPdbSynthesisPrompt(date, topSources, clusteredFindings, metaStats),
-      );
-    } catch (e) {
-      // Fallback: just dump the extracted intel
-      finalBrief = `# 微信日报 — ${date} (合成失败)\n\n> 合成阶段失败: ${(e as Error).message}\n\n## 详细抽取结果\n\n${clusteredFindings}`;
+    if (this.options.enableTearline) {
+      await onProgress(header + `_⚡ 阶段 5/5: 生成 30 秒速读版_`, false);
+      try {
+        tearline = await llmClient.complete(buildTearlinePrompt(mainBrief));
+      } catch (e) {
+        console.error('Tearline failed:', e);
+      }
     }
 
-    const finalContent = `${finalBrief}\n\n---\n\n<details><summary>📋 原始抽取数据 (${extractedResults.length} 个对话)</summary>\n\n${clusteredFindings}\n\n</details>`;
+    if (this.options.enableBiasAudit) {
+      await onProgress(header + `_🔍 阶段 5/5: 偏差审计_`, false);
+      try {
+        biasAudit = await llmClient.complete(buildBiasAuditPrompt(mainBrief));
+      } catch (e) {
+        console.error('Bias audit failed:', e);
+      }
+    }
 
-    await onProgress(finalContent, true);
-    return finalContent;
+    // Compose final document with Tearline at top (boss reads here first)
+    const sections: string[] = [];
+    if (tearline) {
+      sections.push(`# ⚡ 30 秒速读 — ${date}\n\n${tearline}\n\n---`);
+    }
+    sections.push(mainBrief);
+    if (biasAudit) {
+      sections.push(`---\n\n${biasAudit}`);
+    }
+
+    // Add collapsible original extraction at the bottom (for drilldown)
+    const drillDown = extractions
+      .map(r => `### ${r.name} (${r.msgCount}条)\n${r.extracted}`)
+      .join('\n\n---\n\n');
+    sections.push(`---\n\n<details><summary>📂 原始数据下钻 (${extractions.length} 个对话)</summary>\n\n${drillDown}\n\n</details>`);
+
+    const finalDoc = sections.join('\n\n');
+    await onProgress(finalDoc, true);
+    return finalDoc;
   }
 
   // Backward-compat
@@ -239,8 +403,13 @@ export class BriefingGenerator {
   }
 
   buildPrompt(messages: ParsedMessage[], date: string): string {
-    const groups = this.groupByConversation(messages);
-    const allText = [...groups.entries()].map(([n, m]) => this.formatConversation(n, m)).join('\n\n');
-    return buildPdbSynthesisPrompt(date, this.formatTopSourcesSummary(), allText, `- 总消息数：${messages.length}`);
+    const groups = this.groupByConversation(this.triage(messages));
+    const text = [...groups.entries()].map(([n, m]) => this.formatConversation(n, m)).join('\n\n');
+    return buildPdbSynthesisPrompt(date, this.formatTopSourcesSummary(), text, `- 总消息: ${messages.length}`);
+  }
+
+  formatMessagesForAI(messages: ParsedMessage[]): string {
+    const groups = this.groupByConversation(this.triage(messages));
+    return [...groups.entries()].map(([n, m]) => this.formatConversation(n, m)).join('\n\n');
   }
 }

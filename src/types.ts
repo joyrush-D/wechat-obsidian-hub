@@ -19,7 +19,7 @@ export const DEFAULT_SETTINGS: OWHSettings = {
   decryptKeyHex: '',
   decryptMode: 'manual',
   aiEndpoint: 'http://localhost:1234/v1',
-  aiModel: '',
+  aiModel: '',  // empty = use whichever model is currently loaded in LM Studio
   briefingFolder: 'WeChat-Briefings',
   briefingTimeRangeHours: 24,
   autoGenerate: false,

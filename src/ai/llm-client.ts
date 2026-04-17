@@ -7,7 +7,8 @@ export class LlmClient {
   private candidateModels: string[] = [];
 
   /**
-   * Build candidate model list (non-embedding), excluding ones we've seen fail.
+   * Build candidate model list, sorted by likelihood of being currently loaded.
+   * Heuristic: prefer larger qwen models (user typically loads these), then alphabetical.
    */
   async getCandidateModels(): Promise<string[]> {
     if (this.candidateModels.length > 0) return this.candidateModels;
@@ -16,9 +17,25 @@ export class LlmClient {
       if (resp.ok) {
         const data = await resp.json();
         const models: { id: string }[] = data.data || [];
-        this.candidateModels = models
+        const filtered = models
           .map(m => m.id)
           .filter(id => !/embed|embedding/i.test(id));
+
+        // Score each model: prefer general-purpose Qwen 3.5 series (most common LM Studio default)
+        const scored = filtered.map(id => {
+          let score = 0;
+          if (/qwen3\.5/i.test(id)) score += 100;       // Qwen 3.5 family preferred
+          if (/35b|34b|32b/i.test(id)) score += 50;     // ~35B sweet spot
+          if (/a3b/i.test(id)) score += 30;             // active 3B (MoE) — fast
+          if (/instruct|chat/i.test(id)) score += 20;
+          if (/coder|code/i.test(id)) score -= 10;      // coder models bad for general chat
+          if (/122b|70b/i.test(id)) score -= 5;          // very large = slow/may not be loaded
+          return { id, score };
+        });
+
+        scored.sort((a, b) => b.score - a.score);
+        this.candidateModels = scored.map(s => s.id);
+        console.log('OWH: Model preference order:', this.candidateModels);
       }
     } catch (e) {
       console.error('OWH: Failed to list models:', e);
@@ -60,61 +77,53 @@ export class LlmClient {
     // Sanitize: remove null bytes and other control chars that break JSON/HTTP
     const cleanPrompt = prompt.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, ' ');
 
-    // Try with model failover: if a model fails to load, try the next one
-    const maxAttempts = 5;
-    let lastError: Error | null = null;
+    // Strategy:
+    // 1. If user configured `model`, use it. NO failover.
+    // 2. Otherwise, send WITHOUT model field (LM Studio uses currently loaded one).
+    // 3. Only failover when explicitly told "No models loaded".
+    const model = this.model;
 
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const model = await this.resolveModel();
+    const body: Record<string, unknown> = {
+      messages: [{ role: 'user', content: cleanPrompt }],
+      temperature: 0.3,
+      max_tokens: 8192,
+    };
+    if (model) body.model = model;
 
-      const body = {
-        model: model || undefined,
-        messages: [{ role: 'user', content: cleanPrompt }],
-        temperature: 0.3,
-        max_tokens: 4096,
-      };
+    console.log(`OWH: Sending ${cleanPrompt.length} chars to LM Studio (${model || 'currently loaded'})...`);
 
-      console.log(`OWH: Sending ${cleanPrompt.length} chars to LLM (${model || 'default'}, attempt ${attempt + 1})...`);
+    const response = await fetch(`${this.endpoint}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
 
-      const response = await fetch(`${this.endpoint}/chat/completions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        const content = data.choices?.[0]?.message?.content || '';
-        if (!content && data.choices?.[0]?.message?.reasoning_content) {
-          return data.choices[0].message.reasoning_content;
-        }
-        return content;
+    if (response.ok) {
+      const data = await response.json();
+      const content = data.choices?.[0]?.message?.content || '';
+      if (!content && data.choices?.[0]?.message?.reasoning_content) {
+        return data.choices[0].message.reasoning_content;
       }
-
-      let errorBody = '';
-      try {
-        if (typeof response.text === 'function') errorBody = await response.text();
-      } catch { /* ignore */ }
-      console.error(`OWH: LLM API ${response.status}: ${errorBody.slice(0, 200)}`);
-
-      // Determine if this is a per-model failure (worth trying another model)
-      const isModelFailure =
-        errorBody.includes('Failed to load model') ||
-        errorBody.includes('model has crashed') ||
-        errorBody.includes('No models loaded');
-
-      if (isModelFailure && model) {
-        console.log(`OWH: Model "${model}" failed, trying another...`);
-        this.markFailed(model);
-        lastError = new Error(`LLM API error: ${response.status} (${model})`);
-        continue;  // try next model
-      }
-
-      // Other error types (like 5xx, content too long) — don't retry
-      throw new Error(`LLM API error: ${response.status}${errorBody ? ' — ' + errorBody.slice(0, 200) : ''}`);
+      return content;
     }
 
-    throw lastError || new Error('All models failed to respond. Please load a model in LM Studio.');
+    let errorBody = '';
+    try {
+      if (typeof response.text === 'function') errorBody = await response.text();
+    } catch { /* ignore */ }
+    console.error(`OWH: LLM API ${response.status}: ${errorBody.slice(0, 300)}`);
+
+    if (errorBody.includes('No models loaded')) {
+      throw new Error('LM Studio 没有加载任何模型。请在 LM Studio 里加载一个模型后重试。');
+    }
+    if (errorBody.includes('context length') || errorBody.includes('token')) {
+      throw new Error(`输入过长，超过模型上下文容量。建议减少时间范围或对话数量。原始错误: ${errorBody.slice(0, 100)}`);
+    }
+    if (errorBody.includes('Failed to load model')) {
+      throw new Error(`LM Studio 无法加载指定模型 "${model}"。请检查模型名是否正确，或留空让 LM Studio 用当前加载的模型。`);
+    }
+
+    throw new Error(`LLM API error: ${response.status}${errorBody ? ' — ' + errorBody.slice(0, 200) : ''}`);
   }
 
   async isAvailable(): Promise<boolean> {

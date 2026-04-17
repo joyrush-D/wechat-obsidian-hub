@@ -53,25 +53,25 @@ const EMPTY_TRUST: SourceTrustData = {
  *   F: Unknown → "cannot judge"
  */
 export function gradeSource(stats: SourceStats | undefined, contact?: Contact): SourceReliability {
+  // Bootstrap from contact attributes when no historical data
   if (!stats) {
-    if (contact?.remark) return 'B';
-    if (contact?.nickName) return 'D';
-    return 'F';
+    if (contact?.remark) return 'B';   // user gave them a remark = matters to user
+    if (contact?.nickName && !contact.isGroup) return 'C';  // known person but no remark
+    return 'D';
   }
 
   const score =
-    (stats.hasRemark ? 30 : 0) +
-    (stats.isInDirectMsg ? 25 : 0) +
-    (stats.mentionsUser > 0 ? 15 : 0) +
-    Math.min(stats.daysObserved * 2, 20) +
-    Math.min(stats.totalMessages / 10, 10);
+    (stats.hasRemark ? 35 : 0) +           // user assigned a remark
+    (stats.isInDirectMsg ? 25 : 0) +       // 1-on-1 conversation
+    (stats.mentionsUser > 0 ? 15 : 0) +    // mentions user
+    Math.min(stats.daysObserved * 3, 20) + // observed over time
+    Math.min(stats.totalMessages / 5, 10); // active speaker
 
-  if (score >= 60) return 'A';
-  if (score >= 40) return 'B';
-  if (score >= 20) return 'C';
-  if (score >= 8) return 'D';
-  if (score > 0) return 'E';
-  return 'F';
+  if (score >= 55) return 'A';
+  if (score >= 35) return 'B';
+  if (score >= 15) return 'C';
+  if (score >= 5) return 'D';
+  return 'E';
 }
 
 /**

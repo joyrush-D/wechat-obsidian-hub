@@ -1,55 +1,86 @@
 /**
- * Briefing prompts modeled after the CIA's President's Daily Brief (PDB) format
- * and ICD 203 analytic standards. Includes:
- *
- * - BLUF (Bottom Line Up Front)
- * - NATO Admiralty Code source notation (B2 = usually reliable + probably true)
- * - Sherman Kent estimative language (high confidence / moderate / low)
- * - "What's New / Why It Matters / What to Watch" structure
- * - Coordinated dissent (alternative interpretations)
+ * Prompt templates inspired by IC standards from US/UK/Israel/etc.
+ * - PDB (CIA), JIC consensus (UK), Tenth Man (Israel), Tearline (NSA)
+ * - ICD 203 analytic standards, Sherman Kent estimative language
  */
 
 /**
  * Stage 2: per-conversation entity extraction.
- * Output is structured (not prose) so we can re-cluster across conversations.
+ * Output is dense structured Markdown, not prose.
  */
 export function buildExtractionPrompt(conversationName: string, messages: string): string {
-  return `你是情报分析员。从以下"${conversationName}"对话中提取结构化要点。
-不要总结全文，提取下列信号：
+  return `从"${conversationName}"对话中提取关键信号。严格按以下格式输出，不要扩展不要解释。
 
-输出严格 Markdown 格式：
+每段如果没内容，写"无"。中文输出。
 
-### 话题
-- [话题名称]: 一句话描述
-- (列出本对话主要讨论的 1-5 个话题)
+### 议题
+- 一行一个，不超过 5 个
 
 ### 决策与判断
-- [发言人 / 信源等级]: 提出的具体观点或决策
+- 谁说了什么具体观点（不是泛泛讨论）
 
-### @ 我的内容
-- [发言人]: 直接 @ 用户或需要用户回应的消息
+### @我或求助
+- 直接 @ 用户、需要回应、或求帮忙的消息
 
 ### 行动项
-- [发言人]: 需要做某事 / 待办事项
+- 谁需要做什么具体的事
 
-### 资源
-- [发言人]: 链接标题 / 文件名
+### 资源链接
+- 标题: URL（只列真实链接，跳过"版本不支持"）
 
-### 实体
-- 人物: 提及的关键人物
-- 组织/产品: 公司、品牌、产品名
-- 数字: 重要数字（成本、日期、指标）
+### 重要实体
+- 人物: ...
+- 公司/产品: ...
+- 关键数字: ...
 
-如果某个段落没有内容，写"- 无"。
-仅提取，不评论。中文输出。
-
-对话内容：
+对话:
 ${messages}`;
 }
 
 /**
+ * Stage 3: cluster compression - compress per-conversation extractions
+ * into cross-conversation themes (cuts down tokens for final synthesis).
+ */
+export function buildClusteringPrompt(extractions: string): string {
+  return `你是情报分析员。下面是今日所有对话的抽取结果。请重新组织：
+不按对话分组，而是**按话题/主题**跨对话归并。
+
+输出格式（严格遵守）：
+
+## 跨群话题
+
+### [主题1: 简短标题]
+- 涉及对话: [群A], [群B]
+- 核心讨论: 一两句话
+- 关键发言: [人名]: 观点
+- 资源: 标题 (URL)
+
+### [主题2: ...]
+...
+
+## 个人焦点
+（直接 @ 用户、求助、需要回应的事项，按紧急度排序）
+- 🔴 [紧急] [人名] 在 [对话]: 内容
+- 🟡 [重要] ...
+- 🟢 [留意] ...
+
+## 重要人物今日动态
+（高频或有备注的发言人都说了什么）
+- [人名]: 主要话题/观点
+
+## 资源汇总
+（按主题归类的所有真实链接）
+- [主题]: 标题 — URL
+
+请只输出上述结构，不要前言后语。中文输出。
+
+抽取数据:
+${extractions}`;
+}
+
+/**
  * Stage 5: PDB-style synthesis from clustered intel.
- * Input is the consolidated structured findings, output is the boss-ready brief.
+ * Inspired by CIA PDB + UK JIC + Israeli Tenth Man + Sherman Kent estimative language.
  */
 export function buildPdbSynthesisPrompt(
   date: string,
@@ -57,76 +88,109 @@ export function buildPdbSynthesisPrompt(
   clusteredFindings: string,
   metaStats: string,
 ): string {
-  return `你是情报分析员，正在为决策者（"领导"，即用户）撰写每日简报。
-严格按照 CIA PDB（总统每日简报）格式输出。
+  return `你正在为决策者（"领导"）撰写一份**简洁、可执行**的微信日报。
 
-# 写作纪律（ICD 203 标准）
+# 写作纪律
 
-1. **BLUF（结论前置）**：每个段落第一句话给结论，不要从背景写起
-2. **使用估测性词汇**（精确表达置信度）：
-   - "几乎肯定"(95%+) / "高度可能"(80-95%) / "可能"(55-80%) / "五五开"(45-55%) / "不太可能"(20-45%) / "极不可能"(5-20%)
-3. **信源可信度标注**（已在输入中以中文给出，格式如"常规信源·观点"，分两层：
-   - 信源等级：核心信源 > 常规信源 > 偶发信源 > 生疏信源 > 陌生人 > 无法判断
-   - 内容性质：已确认 > 可能为真 > 观点 > 待验证 > 存疑 > 无法判断）
-4. **区分"事实"与"判断"**：用 💬 标注引用，🧠 标注分析员判断
-5. **包含异见/替代解读**（如果有不同观点）
-6. **指出待观察信号**（What to Watch）
+1. **结论前置**：每段第一句给结论
+2. **使用估测词汇**："几乎肯定"(95%+) / "高度可能"(80%+) / "可能"(55%+) / "五五开"(45-55%) / "不太可能"(<45%) / "极不可能"(<20%)
+3. **区分**：💬 引用 vs 🧠 你的分析判断
+4. **简洁**：每段不超过 3 句。整篇控制在 1500 字以内
+5. **以色列第十人**：在"反方观点"段落故意提出一个相反的解读
+6. **可验证性**：关键判断附"如何独立验证"（例如查某个新闻、问某人）
 
-# 信源信任度（用作判断权重）
+# 信源信任度
 ${topSources}
 
-# 元数据
+# 数据
 ${metaStats}
 
-# 已聚类的情报输入
+# 输入材料（已按主题聚类）
 ${clusteredFindings}
 
 ---
 
-# 输出格式（严格遵守）
+# 输出格式（严格遵守，不要画蛇添足）
 
-# 微信日报 — ${date}
+# 微信日报 ${date}
 
-## 🎯 BLUF（30秒概要）
-**领导今天必须知道的 1-3 件事，每条 1 句话，按重要性排序。**
+## 🎯 30 秒速读
+3 条最重要的事，每条一句话 + 置信度。
+1. **[置信度]** ...
+2. **[置信度]** ...
+3. **[置信度]** ...
 
-## ⚡ 直接关乎领导（@Mentions / Action Required）
-**这是最重要的部分。识别原则**：
-1. 消息中包含"@用户名"或"@joyrush"等明确@提及
-2. 1对1私聊中收到的消息（不是群聊）
-3. 群聊中以问号结尾且涉及业务的消息
-4. 有人请求帮助、决策、回复
-5. 提及用户负责的项目/产品
+## ⚡ 直接关乎你
+（@ 你或需要你回复的事，按紧急度排序）
+- 🔴/🟡/🟢 **[人名 · 信源等级]** 在 [对话名]: 一句话说事 → 建议回复要点
+- 如果完全没有，写"今日无人直接 @ 你"
 
-格式：
-- **[紧急度: 🔴 紧急/🟡 重要/🟢 留意]** [发言人·信源等级] 在 [对话名] 说: "原文摘要" → 建议回复要点
-- (如果完全没有，明确写"今日无直接需要回应的事项"，不要编造)
+## 📰 今日要闻
+按主题（不按群），每个主题：
+### [主题]
+**核心**: 一句话结论 [置信度]
+💬 关键引用: "..." — [人名 · 信源等级]
+🧠 分析: 为何重要
 
-## 📰 What's New（今日核心动态）
-按主题归类（不按对话），每个主题：
-### [主题名]
-**核心判断**: 一句话结论 [置信度]
-💬 **关键引用**: "..." — 发言人 [信源等级]
-🧠 **分析**: 为什么这件事值得关注
-**异见**: 如有不同看法...
+## 🧠 关键判断
+2-4 条跨主题的重要判断：
+1. **[置信度]** 判断 — 依据：...
 
-## 🧠 关键判断（Key Judgments）
-3-5 条跨主题的核心判断，每条带置信度：
-1. **[高度可能]** ...（依据：3 个独立信源）
-2. **[可能]** ...
+## 🤔 反方观点（第十人原则）
+故意找出一个与上述判断相反的解读，避免群体盲思：
+> 如果...其实是另一回事呢？
 
-## 🔍 What to Watch（明日关注信号）
-- 信号 1: 如果 X 发生，意味着...
+## 🔍 明日关注
+- 信号 1: 如果出现 X，意味着...
 - 信号 2: ...
 
-## 🔗 资源附录
-按主题归类的链接和文件：
-- **主题**: [标题](URL) — 来源 [信源等级]
+## 🔗 资源
+按主题分组的真实链接（跳过"版本不支持"）。
 
-## 📊 元数据
-${metaStats}
+请按上述格式输出，不要添加额外段落。中文。`;
+}
 
----
+/**
+ * Tearline: ultra-condensed 30-second summary.
+ * For when the boss only has 30 seconds.
+ */
+export function buildTearlinePrompt(fullBriefing: string): string {
+  return `把以下完整简报压缩成 30 秒速读版。
 
-请严格按照上述格式生成简报。中文输出。聚焦于决策价值，避免冗长复述。`;
+要求：
+- 不超过 300 字
+- 只保留最重要的 3 件事
+- 每件事 1 句话
+- 包含必须立即处理的事项
+- 删除所有解释、引用、分析
+
+输入完整简报:
+${fullBriefing}
+
+输出 30 秒速读版（直接输出内容，不要前言）：`;
+}
+
+/**
+ * Bias audit: check the briefing for cognitive biases (Heuer's 18-bias list).
+ */
+export function buildBiasAuditPrompt(briefing: string): string {
+  return `你是情报分析质量审查员，按 Richards Heuer 的 18 项认知偏差清单审查这份简报。
+
+只标记**确实出现的**偏差，不要无中生有。每项不超过一行。
+
+主要检查：
+- **确认偏差** (Confirmation Bias): 所有判断都倾向同一方向？
+- **可得性启发** (Availability): 过度引用最近发生或印象深刻的事件？
+- **锚定** (Anchoring): 是否被某个数字/观点过度锚定？
+- **镜像** (Mirror Imaging): 假设别人的思考方式和你一样？
+- **群体盲思** (Groupthink): 反方观点段落有没有真正提出反方？
+- **生动偏差** (Vividness): 把生动具体的故事当成普遍规律？
+
+输出格式：
+## 偏差审计
+- ⚠️ [偏差名]: 具体出现在哪段，具体是什么问题
+- 如果没有显著偏差，写"本报告未发现显著认知偏差"
+
+简报内容:
+${briefing}`;
 }
