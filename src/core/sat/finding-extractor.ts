@@ -50,7 +50,7 @@ export function buildFindingsExtractionPrompt(briefingMarkdown: string): string 
 - **只抽取简报里真实出现的判断**，不要编造。不确定的场合直接不抽。
 - **Kent 概率语词必须与数字区间一致**：
 ${kentList}
-- **每个 Finding 至少要有 1 条 evidenceRef**。如果简报没给出原始消息 id，用 \`msg:wechat:unknown\` 作为占位（这是合法的，表示"简报层证据"）。
+- **每个 Finding 至少要有 1 条 evidenceRef**。**优先使用简报引用里出现的真实消息 ID**（格式 \`msg:wechat:<convoId>:<localId>\`，通常在引用末尾的方括号里）—— 这是精准证据回溯的前提。**仅当简报完全没有可追溯 ID 时**，才用 \`msg:wechat:unknown\` 作为降级占位。
 - **Admiralty code 必须形如 A1-F6**。如果简报没说明来源，用 \`C3\` 作为中位默认。
 - **assumptions 可以是空数组**，但每条假设必须有 confidence 字段。
 - 如果简报根本没有可判断的内容，返回空数组 \`[]\`。

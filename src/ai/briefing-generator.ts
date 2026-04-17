@@ -89,7 +89,12 @@ export class BriefingGenerator {
     return new Map([...groups.entries()].sort((a, b) => b[1].length - a[1].length));
   }
 
-  /** Format a conversation with plain-Chinese source labels. */
+  /**
+   * Format a conversation with plain-Chinese source labels.
+   * Each message is prefixed with its stable id `msg:wechat:<convoId>:<localId>`
+   * so downstream Finding extraction can cite real evidence entities rather
+   * than the "msg:wechat:unknown" placeholder.
+   */
   formatConversation(name: string, msgs: ParsedMessage[]): string {
     const contactsMap = this.options.contactsMap || new Map();
     const lines: string[] = [`## ${name} (${msgs.length}条)`];
@@ -101,7 +106,8 @@ export class BriefingGenerator {
       const code = formatAdmiraltyCode(reliability, credibility);
 
       const time = msg.time.toTimeString().slice(0, 5);
-      let line = `[${time}] ${msg.sender} [${code}]: ${msg.text}`;
+      const msgId = `msg:wechat:${msg.conversationId}:${msg.localId}`;
+      let line = `[${time}] [${msgId}] ${msg.sender} [${code}]: ${msg.text}`;
       if (msg.type === 'link' && msg.extra.description) line += ` — ${msg.extra.description}`;
       if (msg.extra.url && msg.extra.unsupported !== '1') line += ` (${msg.extra.url})`;
       lines.push(line);

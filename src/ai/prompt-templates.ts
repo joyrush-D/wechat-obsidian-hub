@@ -35,6 +35,7 @@ export function buildDirectSynthesisPrompt(
 4. **严格聚类**：同一主题必须有共享实体（公司/产品/事件）—— 不相关的事绝不归一类
 5. **第十人**：强制提出一个反方假设
 6. **Bellingcat**：关键判断附"如何独立验证"
+7. **证据可追溯**：消息正文每条前都有形如 \`[msg:wechat:<convoId>:<localId>]\` 的稳定 ID；**引用原话时，把该 ID 写在引用末尾**（格式：\`"原话" [msg:wechat:...]\`）以便下游 Finding 抽取器精准回溯证据。
 
 【输出结构】
 
@@ -57,7 +58,7 @@ export function buildDirectSynthesisPrompt(
 ### [具体主题]
 **涉及**: 哪些对话提到
 **核心**: 一句话结论 [置信度]
-💬 引用: "..." — [人名]
+💬 引用: "..." [msg:wechat:...] — [人名]
 🧠 分析: 为什么值得关注
 
 ## 🌐 今日信息接触面（Information Touchpoints）

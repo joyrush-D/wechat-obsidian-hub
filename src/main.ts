@@ -25,6 +25,8 @@ import { WeChatFileLocator } from './media/wechat-file-locator';
 import { SilkDecoder } from './media/silk-decoder';
 import { EvidenceStore } from './core/storage/evidence-store';
 import { buildFindingsExtractionPrompt, parseFindings } from './core/sat/finding-extractor';
+import { identityToActor } from './core/identity/actor-factory';
+import { messageToObject } from './core/messaging/object-factory';
 import type { ParsedMessage } from './types';
 
 export default class OWHPlugin extends Plugin {
@@ -160,13 +162,18 @@ export default class OWHPlugin extends Plugin {
             },
           );
 
-          // v0.5.0 — Extract structured Findings from the briefing, persist to
-          // EvidenceStore so they can be cited / calibrated later. Best-effort:
-          // failures here must not break the visible briefing.
+          // v0.5.0/v0.5.1 — Persist evidence chain:
+          // (1) Actors involved in the window (from resolver, only those seen)
+          // (2) WxObjects for substantive messages in the window
+          // (3) Findings extracted from the briefing (by a 2nd LLM call)
+          // Findings can cite real `msg:wechat:<convoId>:<localId>` ids because
+          // the briefing now preserves them (see prompt-templates §7).
           try {
-            await this.extractAndPersistFindings(briefing, llmClient, fileSlug);
+            await this.persistEvidenceAndFindings(
+              messages, identityResolver, briefing, llmClient, fileSlug,
+            );
           } catch (e) {
-            console.error('OWH: Finding extraction failed (non-fatal):', e);
+            console.error('OWH: Evidence + finding persistence failed (non-fatal):', e);
           }
         } catch (err) {
           console.error('OWH: Error generating briefing', err);
@@ -910,18 +917,68 @@ export default class OWHPlugin extends Plugin {
   }
 
   /**
-   * v0.5.0 — Extract structured Finding[] from a generated briefing via a
-   * second LLM call, then persist to EvidenceStore. Runs AFTER the visible
-   * briefing is saved, so a failure here is purely a background miss.
+   * v0.5.0 + v0.5.1 — Populate the EvidenceStore for this briefing run.
+   *   1. Actors involved (authors + conversation containers) from the resolver
+   *   2. WxObject entities for substantive messages (text >= 10 chars,
+   *      not emoji / system / voice / image placeholders)
+   *   3. Findings extracted from the briefing markdown via a 2nd LLM call
+   *
+   * Steps 1+2 happen BEFORE step 3 so Finding.evidenceRefs can cite real
+   * entity ids that already exist in the store. Uses allowOverwrite: true
+   * because entity content (e.g. text / aliases) can legitimately evolve.
    */
-  private async extractAndPersistFindings(
+  private async persistEvidenceAndFindings(
+    messages: ParsedMessage[],
+    identityResolver: IdentityResolver | null,
     briefing: string,
     llmClient: LlmClient,
     reportSlug: string,
   ): Promise<void> {
     const storeDir = join(process.env.HOME || '', '.wechat-hub', 'evidence-store');
     const store = new EvidenceStore(storeDir);
+    const nowIso = new Date().toISOString();
 
+    // 1. Actors — only ones that appear as sender or conversation in this window,
+    //    so we don't flood the store with all 28k contacts on every run.
+    let actorCount = 0;
+    if (identityResolver) {
+      const seenWxids = new Set<string>();
+      for (const m of messages) {
+        if (m.senderWxid) seenWxids.add(m.senderWxid);
+        if (m.conversationId) seenWxids.add(m.conversationId);
+      }
+      for (const wxid of seenWxids) {
+        const id = identityResolver.get(wxid);
+        if (!id) continue;
+        try {
+          store.put(identityToActor(id, { sourceAdapter: 'wechat', createdAt: nowIso }), { allowOverwrite: true });
+          actorCount++;
+        } catch (e) {
+          console.warn(`OWH: failed to persist actor ${wxid}:`, e);
+        }
+      }
+    }
+
+    // 2. WxObjects — substantive messages only
+    let objectCount = 0;
+    for (const m of messages) {
+      const txt = (m.text || '').trim();
+      if (m.type === 'emoji' || m.type === 'system') continue;
+      if (txt.length < 10) continue;
+      // Keep voice/image placeholders only when their text was already replaced
+      // by the MediaEnhancer (i.e. not still "[voice]" / "[image]").
+      if (txt === '[voice]' || txt === '[image]' || txt === '[video]') continue;
+      try {
+        store.put(messageToObject(m, { sourceAdapter: 'wechat', createdAt: nowIso }), { allowOverwrite: true });
+        objectCount++;
+      } catch (e) {
+        console.warn(`OWH: failed to persist object ${m.localId}:`, e);
+      }
+    }
+
+    console.log(`OWH: persisted ${actorCount} actors + ${objectCount} objects`);
+
+    // 3. Findings via LLM
     new Notice('OWH: 正在抽取结构化判断...');
     const extractionPrompt = buildFindingsExtractionPrompt(briefing);
     let rawJson: string;
@@ -935,28 +992,25 @@ export default class OWHPlugin extends Plugin {
 
     const { findings, errors } = parseFindings(rawJson, {
       reportId: `report:wechat:${reportSlug}`,
-      createdAt: new Date().toISOString(),
+      createdAt: nowIso,
     });
-
     if (errors.length > 0) {
       console.warn('OWH: Finding extraction partial errors:', errors.slice(0, 8));
     }
 
-    let persisted = 0;
     for (const f of findings) {
       try {
-        store.putFinding(f);
-        persisted++;
+        store.putFinding(f, { allowOverwrite: true });
       } catch (e) {
         console.warn(`OWH: failed to persist finding ${f.id}:`, e);
       }
     }
 
     const stats = store.stats();
-    console.log(`OWH: EvidenceStore now has ${stats.findings} findings total`);
+    console.log(`OWH: EvidenceStore — ${stats.actors} actors, ${stats.objects} objects, ${stats.findings} findings`);
     new Notice(
-      `OWH: 抽取 ${findings.length} 条判断${errors.length ? `（${errors.length} 条忽略）` : ''}，累计 ${stats.findings} 条`,
-      5000,
+      `OWH: 抽取 ${findings.length} 条判断${errors.length ? `（${errors.length} 条忽略）` : ''}，累计 ${stats.findings} 条 | 证据库 ${stats.actors} actors · ${stats.objects} objects`,
+      6000,
     );
   }
 
