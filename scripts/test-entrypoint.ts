@@ -34,7 +34,11 @@ async function main() {
   const msgDir = join(DB_DIR, 'message');
   const msgFiles = readdirSync(msgDir).filter(f => f.endsWith('.db') && (f.startsWith('message_') || f.startsWith('biz_message_')) && !f.includes('fts') && !f.includes('resource'));
 
-  const since = new Date(Date.now() - 24 * 3600 * 1000);
+  // Today since local midnight (matches main.ts default behavior for 24h setting)
+  const _midnight = new Date();
+  _midnight.setHours(0, 0, 0, 0);
+  const since = _midnight;
+  console.log(`Messages since: ${since.toISOString()}`);
   const allMessages: ParsedMessage[] = [];
 
   for (const file of msgFiles) {

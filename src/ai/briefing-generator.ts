@@ -102,6 +102,64 @@ export class BriefingGenerator {
   }
 
   /**
+   * Scan ALL messages for direct @ mentions to the user.
+   * Not cached — always runs fresh on current data.
+   * Returns formatted section or empty string.
+   */
+  scanUserMentions(messages: ParsedMessage[]): string {
+    const userWxid = (this.options.userWxid || '').toLowerCase();
+    if (!userWxid) return '';
+
+    const contactsMap = this.options.contactsMap || new Map();
+    const mentions: Array<{ msg: ParsedMessage; reason: string }> = [];
+
+    // Collect possible user identifiers (wxid + nick + remark)
+    const userIdentifiers = new Set<string>([userWxid]);
+    const userContact = contactsMap.get(userWxid);
+    if (userContact?.nickName) userIdentifiers.add(userContact.nickName.toLowerCase());
+    if (userContact?.remark) userIdentifiers.add(userContact.remark.toLowerCase());
+
+    for (const msg of messages) {
+      if (msg.senderWxid === userWxid) continue;  // skip user's own messages
+      const textLower = msg.text.toLowerCase();
+
+      // Direct @-mention check
+      let matched = false;
+      let reason = '';
+      for (const id of userIdentifiers) {
+        if (!id || id.length < 2) continue;
+        if (textLower.includes(`@${id}`)) {
+          matched = true;
+          reason = `明确 @ 了你 (${id})`;
+          break;
+        }
+      }
+
+      // Direct message (1-on-1 with user as conversation)
+      if (!matched && msg.conversationId === userWxid) {
+        matched = true;
+        reason = `私聊消息`;
+      }
+
+      if (matched) mentions.push({ msg, reason });
+    }
+
+    if (mentions.length === 0) return '';
+
+    // Sort by time desc (newest first)
+    mentions.sort((a, b) => b.msg.time.getTime() - a.msg.time.getTime());
+
+    const lines: string[] = ['## 📍 直接 @ 你的消息（原始扫描，未经 AI 过滤）', ''];
+    for (const { msg, reason } of mentions.slice(0, 20)) {
+      const time = msg.time.toTimeString().slice(0, 5);
+      const sender = msg.sender || msg.senderWxid;
+      const text = msg.text.slice(0, 200).replace(/\n/g, ' ');
+      lines.push(`- **[${time}] ${sender}** 在 ${msg.conversationName} (${reason}): ${text}`);
+    }
+    return lines.join('\n');
+  }
+
+  /**
    * Build per-person daily data for Pattern of Life analysis.
    * Returns top 8 speakers (by message volume or trust grade), with their quotes across groups.
    */
@@ -121,14 +179,19 @@ export class BriefingGenerator {
       bySpeaker.get(msg.senderWxid)!.msgs.push(msg);
     }
 
-    // Sort speakers: prefer those with remarks (user cares about them) AND not raw wxid_, then by volume
-    const speakers = [...bySpeaker.entries()].sort((a, b) => {
+    // Filter: ONLY include people with a real name (not raw wxid_xxx).
+    // Raw wxids = unknown contacts, user can't recognize them anyway.
+    const namedSpeakers = [...bySpeaker.entries()].filter(([, info]) => {
+      // Skip if display name looks like a raw wxid
+      return !/^wxid_[a-z0-9]+$/i.test(info.displayName);
+    });
+
+    // Sort by: remarked first (user explicitly cared), then by message volume
+    const speakers = namedSpeakers.sort((a, b) => {
       const ca = contactsMap.get(a[0]);
       const cb = contactsMap.get(b[0]);
-      const isRawA = /^wxid_/.test(a[1].displayName) ? 0 : 50;  // prefer named over wxid_
-      const isRawB = /^wxid_/.test(b[1].displayName) ? 0 : 50;
-      const sa = (ca?.remark ? 100 : 0) + isRawA + a[1].msgs.length;
-      const sb = (cb?.remark ? 100 : 0) + isRawB + b[1].msgs.length;
+      const sa = (ca?.remark ? 1000 : 0) + a[1].msgs.length;
+      const sb = (cb?.remark ? 1000 : 0) + b[1].msgs.length;
       return sb - sa;
     }).slice(0, 8);  // top 8
 
@@ -560,16 +623,23 @@ export class BriefingGenerator {
       }
     }
 
+    // Scan raw messages for @ mentions — this is NOT cached, always fresh
+    const directMentions = this.scanUserMentions(messages);
+
     // Compose final document. Order matters for boss UX:
     // 1. 30-sec Tearline (fastest read)
-    // 2. Main brief (full PDB)
-    // 3. Pattern of Life (who said what)
-    // 4. Reflexive Control (what to question)
-    // 5. Bias Audit (self-check)
-    // 6. Shareable Tearline (team-ready, below dashed line)
+    // 2. Direct @ mentions (raw scan, never cached)
+    // 3. Main brief (full PDB)
+    // 4. Pattern of Life (who said what)
+    // 5. Reflexive Control (what to question)
+    // 6. Bias Audit (self-check)
+    // 7. Shareable Tearline (team-ready, below dashed line)
     const sections: string[] = [];
     if (tearline) {
       sections.push(`# ⚡ 30 秒速读 — ${date}\n\n${tearline}\n\n---`);
+    }
+    if (directMentions) {
+      sections.push(directMentions + '\n\n---');
     }
     sections.push(mainBrief);
     if (patternOfLife) {

@@ -447,8 +447,19 @@ export default class OWHPlugin extends Plugin {
     const contactDb = this.dbConnector.loadFromBytes(new Uint8Array(contactData));
     const contactReader = new ContactReader(contactDb);
 
-    // Time range cutoff
-    const since = new Date(Date.now() - this.settings.briefingTimeRangeHours * 3600 * 1000);
+    // Time range cutoff.
+    // If briefingTimeRangeHours == 24, treat as "today only" (since local midnight).
+    // Otherwise use rolling window.
+    let since: Date;
+    if (this.settings.briefingTimeRangeHours === 24) {
+      // Today since 00:00 local time
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      since = today;
+    } else {
+      since = new Date(Date.now() - this.settings.briefingTimeRangeHours * 3600 * 1000);
+    }
+    console.log(`OWH: Loading messages since ${since.toISOString()}`);
 
     // Find all message DBs (in message/ subdirectory)
     const msgDir = join(dir, 'message');
