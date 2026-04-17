@@ -605,12 +605,12 @@ export default class OWHPlugin extends Plugin {
       const tables = msgReader.getConversationTables();
 
       for (const table of tables) {
-        // Derive conversation ID from table name (e.g. Msg_abc123 → abc123)
-        const conversationId = table.replace(/^Msg_/, '');
-        const contact = contactReader.getContact(conversationId);
-        const conversationName = contact
-          ? (contact.remark || contact.nickName || conversationId)
-          : conversationId;
+        // Table names are Msg_<md5(real_username)>, so we must reverse-lookup
+        // the hash to get the real chatroom/contact wxid, then fetch its display name.
+        const tableHash = table.replace(/^Msg_/, '');
+        const resolved = contactReader.resolveHashToDisplayName(tableHash);
+        const conversationId = resolved.username || tableHash;  // real wxid if found
+        const conversationName = resolved.name;                  // real display name
 
         const rawMessages = msgReader.getMessages(
           table,

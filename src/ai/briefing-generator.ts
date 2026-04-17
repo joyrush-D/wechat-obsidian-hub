@@ -248,12 +248,22 @@ export class BriefingGenerator {
     // Sort by time desc (newest first)
     mentions.sort((a, b) => b.msg.time.getTime() - a.msg.time.getTime());
 
-    const lines: string[] = [`## 📍 直接 @ 你的消息（机械扫描，覆盖所有身份: ${identities.join('/')}）`, ''];
+    const lines: string[] = [
+      `## 📍 直接 @ 你的消息（${mentions.length} 条，机械扫描，覆盖身份: ${identities.join(' / ')}）`,
+      '',
+    ];
     for (const { msg, reason } of mentions.slice(0, 30)) {
-      const time = msg.time.toTimeString().slice(0, 5);
+      // Show FULL datetime including seconds so user can verify freshness
+      const hhmmss = msg.time.toTimeString().slice(0, 8);
       const sender = msg.sender || msg.senderWxid;
-      const text = msg.text.slice(0, 250).replace(/\n/g, ' ');
-      lines.push(`- 🔴 **[${time}] ${sender}** 在 ${msg.conversationName} (${reason}): ${text}`);
+      const text = msg.text.slice(0, 300).replace(/\n/g, ' ');
+      // Conversation name: use resolved name (now correct via hash→wxid→remark pipeline)
+      // Show both display name and wxid (for user to search in WeChat manually)
+      const convoTag = msg.conversationName && !msg.conversationName.match(/^[a-f0-9]{32}$/)
+        ? `**${msg.conversationName}**`
+        : `_${msg.conversationId || msg.conversationName}_ (未命名)`;
+      lines.push(`- 🔴 **[${hhmmss}] ${sender}** 在 ${convoTag} — ${reason}`);
+      lines.push(`  > ${text}`);
     }
     return lines.join('\n');
   }
