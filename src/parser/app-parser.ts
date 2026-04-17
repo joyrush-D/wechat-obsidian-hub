@@ -26,13 +26,24 @@ export function parseAppMessage(xml: string | null): AppParseResult {
   result.extra.sub_type = String(subType);
 
   switch (subType) {
-    case 5: // Link
+    case 5: { // Link
       result.type = 'link';
-      result.text = `[link] ${title}`;
-      if (des) result.extra.description = des;
-      if (url) result.extra.url = url;
-      if (source) result.extra.source = source;
+      // Detect "version not supported" pseudo-links (encrypted content the desktop client can't render)
+      const isUnsupportedVersion = title && /版本不支持|请升级|update|upgrade/i.test(title);
+      const isUpgradeUrl = url && /support\.weixin\.qq\.com\/(update|security)/i.test(url);
+      if (isUnsupportedVersion || isUpgradeUrl) {
+        result.text = `[加密内容-需手机微信查看]`;
+        // Don't include the bogus upgrade URL in extra
+        result.extra.unsupported = '1';
+        if (source) result.extra.source = source;
+      } else {
+        result.text = `[link] ${title}`;
+        if (des) result.extra.description = des;
+        if (url) result.extra.url = url;
+        if (source) result.extra.source = source;
+      }
       break;
+    }
     case 6: { // File
       result.type = 'file';
       result.text = `[file] ${title || 'unknown file'}`;

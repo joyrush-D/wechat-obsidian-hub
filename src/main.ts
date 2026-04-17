@@ -73,20 +73,32 @@ export default class OWHPlugin extends Plugin {
             return;
           }
 
+          // Detect user identity from WeChat data folder name (e.g. "joyrush_2ffc" → "joyrush")
+          const wechatDir = this.settings.wechatDataDir || this.detectWeChatDataDir() || '';
+          const folderName = wechatDir.split('/').filter(Boolean).slice(-2, -1)[0] || '';
+          const userAlias = folderName.replace(/_[a-f0-9]+$/, '');
+          console.log(`OWH: Detected user alias: ${userAlias}`);
+
           const generator = new BriefingGenerator({
             skipEmoji: this.settings.skipEmoji,
             skipSystemMessages: this.settings.skipSystemMessages,
+            userWxid: userAlias,
           });
 
-          const today = new Date().toISOString().slice(0, 10);
+          // Filename includes timestamp so multiple runs per day don't overwrite
+          const now = new Date();
+          const today = now.toISOString().slice(0, 10);
+          const hhmm = now.toTimeString().slice(0, 5).replace(':', '');
+          const fileSlug = `${today}-${hhmm}`;
+          const dateLabel = `${today} ${now.toTimeString().slice(0, 5)}`;
 
           // Progressive generation: update the note in real-time
           const briefing = await generator.generateProgressive(
-            messages, llmClient, today,
+            messages, llmClient, dateLabel,
             async (content: string, done: boolean) => {
-              await this.saveBriefing(today, content);
+              await this.saveBriefing(fileSlug, content);
               if (done) {
-                new Notice(`OWH: 简报已生成 → ${this.settings.briefingFolder}/${today}.md`);
+                new Notice(`OWH: 简报已生成 → ${this.settings.briefingFolder}/${fileSlug}.md`);
               }
             },
           );

@@ -109,9 +109,40 @@ export function gradeMessage(msg: ParsedMessage, sourceGrade: SourceReliability)
 }
 
 /**
- * Format Admiralty Code as "B2" / "C3" etc.
+ * Plain-Chinese labels for source reliability (A-F).
+ */
+const RELIABILITY_LABEL: Record<SourceReliability, string> = {
+  A: '核心信源',
+  B: '常规信源',
+  C: '偶发信源',
+  D: '生疏信源',
+  E: '陌生人',
+  F: '无法判断',
+};
+
+/**
+ * Plain-Chinese labels for info credibility (1-6).
+ */
+const CREDIBILITY_LABEL: Record<number, string> = {
+  1: '已确认',
+  2: '可能为真',
+  3: '观点',
+  4: '待验证',
+  5: '存疑',
+  6: '无法判断',
+};
+
+/**
+ * Format as plain Chinese: "核心信源·观点" instead of "B2".
  */
 export function formatAdmiraltyCode(reliability: SourceReliability, credibility: InfoCredibility): string {
+  return `${RELIABILITY_LABEL[reliability]}·${CREDIBILITY_LABEL[credibility]}`;
+}
+
+/**
+ * Technical code for internal use (NATO STANAG 2511).
+ */
+export function formatAdmiraltyCodeShort(reliability: SourceReliability, credibility: InfoCredibility): string {
   return `${reliability}${credibility}`;
 }
 
