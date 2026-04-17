@@ -8,18 +8,19 @@
  *   - per-group nicknames (different in each group they're in)
  *
  * Without resolution, the system can't tell that multiple per-group
- * nicknames all refer to the same underlying person.
- *
- * This module builds a complete alias → wxid index at load time, and exposes
- * lookup by ANY alias to retrieve the authoritative wxid + all known names.
+ * nicknames all refer to the same underlying person. Analyst output
+ * must also ANNOTATE each multi-alias person with their ID and per-
+ * group aliases so the reader can cross-reference original messages.
  */
 
 import type { ContactReader } from '../db/contact-reader';
 
 export interface Identity {
-  wxid: string;                    // authoritative ID
-  primaryName: string;             // best display name (remark > nickname > wxid)
-  allNames: Set<string>;           // every alias known
+  wxid: string;                          // authoritative ID
+  primaryName: string;                   // best display name (remark > nickname > wxid)
+  globalNames: Set<string>;              // wxid + nickname + remark
+  groupAliases: Map<string, string>;     // chatroomId → per-group nickname
+  allNames: Set<string>;                 // globalNames ∪ groupAliases values (for @ scanning)
   isGroup: boolean;
   hasRemark: boolean;
 }
@@ -29,6 +30,8 @@ export class IdentityResolver {
   private aliasToWxid: Map<string, string> = new Map();
   /** wxid → Identity */
   private identities: Map<string, Identity> = new Map();
+  /** chatroom wxid → display name (remark > nickName > wxid) */
+  private groupDisplayNames: Map<string, string> = new Map();
 
   constructor(contactReader: ContactReader) {
     this.buildFromContacts(contactReader);
@@ -37,32 +40,38 @@ export class IdentityResolver {
 
   private buildFromContacts(reader: ContactReader): void {
     for (const c of reader.getAllContacts()) {
-      const names = new Set<string>([c.username]);
-      if (c.nickName) names.add(c.nickName);
-      if (c.remark) names.add(c.remark);
+      const globalNames = new Set<string>([c.username]);
+      if (c.nickName) globalNames.add(c.nickName);
+      if (c.remark) globalNames.add(c.remark);
 
       const primaryName = c.remark || c.nickName || c.username;
-      this.identities.set(c.username, {
+      const identity: Identity = {
         wxid: c.username,
         primaryName,
-        allNames: names,
+        globalNames,
+        groupAliases: new Map(),
+        allNames: new Set(globalNames),
         isGroup: c.isGroup,
         hasRemark: !!c.remark,
-      });
+      };
+      this.identities.set(c.username, identity);
 
-      for (const name of names) this.registerAlias(name, c.username);
+      for (const name of globalNames) this.registerAlias(name, c.username);
+
+      // Cache group display names for annotation output
+      if (c.isGroup) {
+        this.groupDisplayNames.set(c.username, primaryName);
+      }
     }
   }
 
   /**
    * Extract per-group aliases from chat_room.ext_buffer.
    * Each group entry has a map {member_wxid -> group_specific_nickname}.
-   * We expand the Identity.allNames for every (wxid, group_nickname) pair.
+   * Store per (wxid, groupId) so we can annotate analyst output with
+   * "她在 X 群叫 A，在 Y 群叫 B".
    */
   private addGroupAliases(reader: ContactReader): void {
-    // Use the existing ext_buffer parser in ContactReader.extractUserGroupAliases,
-    // but extend to every member, not just user.
-    // Since extractUserGroupAliases is user-specific, we parse ourselves here:
     const db = (reader as any).db;
     if (!db) return;
 
@@ -71,6 +80,7 @@ export class IdentityResolver {
       if (results.length === 0) return;
 
       for (const row of results[0].values) {
+        const groupId = row[0] as string;
         const buf = row[1] as Uint8Array;
         if (!buf || buf.length === 0) continue;
 
@@ -79,24 +89,28 @@ export class IdentityResolver {
           const nickTrim = nickname.trim();
           if (!nickTrim) return;
 
-          // Add this nickname to the identity (or create a stub identity)
-          const identity = this.identities.get(wxid);
-          if (identity) {
-            identity.allNames.add(nickTrim);
-            // Upgrade primaryName if the contact had no remark/nick
-            if (!identity.hasRemark && identity.primaryName === wxid) {
-              identity.primaryName = nickTrim;
-            }
-          } else {
-            // Stranger group member (not in your direct contacts but you see them in groups)
-            const stub: Identity = {
+          let identity = this.identities.get(wxid);
+          if (!identity) {
+            // Stranger group member (not in your direct contacts)
+            identity = {
               wxid,
               primaryName: nickTrim,
+              globalNames: new Set([wxid]),
+              groupAliases: new Map(),
               allNames: new Set([wxid, nickTrim]),
               isGroup: false,
               hasRemark: false,
             };
-            this.identities.set(wxid, stub);
+            this.identities.set(wxid, identity);
+          }
+
+          // Record per-group alias
+          identity.groupAliases.set(groupId, nickTrim);
+          identity.allNames.add(nickTrim);
+
+          // Upgrade primaryName if we only had wxid before
+          if (!identity.hasRemark && identity.primaryName === wxid) {
+            identity.primaryName = nickTrim;
           }
 
           this.registerAlias(nickTrim, wxid);
@@ -110,9 +124,8 @@ export class IdentityResolver {
   private registerAlias(alias: string, wxid: string): void {
     const key = alias.trim().toLowerCase();
     if (!key) return;
-    // Prefer first writer wins — but prefer "has contact remark" over stranger
-    const existing = this.aliasToWxid.get(key);
-    if (!existing) {
+    // Prefer first writer wins — contact table wins over group alias collision
+    if (!this.aliasToWxid.has(key)) {
       this.aliasToWxid.set(key, wxid);
     }
   }
@@ -142,19 +155,39 @@ export class IdentityResolver {
     return [...id.allNames];
   }
 
+  /**
+   * Return per-group aliases for a wxid, with group display names resolved.
+   * Used by formatters to render "X 群叫 A，Y 群叫 B".
+   */
+  getGroupAliasEntries(wxid: string): Array<{ groupName: string; alias: string }> {
+    const id = this.identities.get(wxid);
+    if (!id) return [];
+    const out: Array<{ groupName: string; alias: string }> = [];
+    for (const [groupId, alias] of id.groupAliases) {
+      const groupName = this.groupDisplayNames.get(groupId) || groupId;
+      out.push({ groupName, alias });
+    }
+    return out;
+  }
+
   /** Iterate all known identities. */
   allIdentities(): Identity[] {
     return [...this.identities.values()];
   }
 
   /** Size statistics for debugging. */
-  stats(): { identities: number; aliases: number; withRemark: number } {
+  stats(): { identities: number; aliases: number; withRemark: number; multiAlias: number } {
     let withRemark = 0;
-    for (const id of this.identities.values()) if (id.hasRemark) withRemark++;
+    let multiAlias = 0;
+    for (const id of this.identities.values()) {
+      if (id.hasRemark) withRemark++;
+      if (id.allNames.size >= 3) multiAlias++;  // wxid + ≥2 names
+    }
     return {
       identities: this.identities.size,
       aliases: this.aliasToWxid.size,
       withRemark,
+      multiAlias,
     };
   }
 }

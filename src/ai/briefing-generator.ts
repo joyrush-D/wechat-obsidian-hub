@@ -22,6 +22,7 @@ import {
 } from '../intel/source-trust';
 import { ExtractionStore, type ExtractionEntry } from '../intel/extraction-store';
 import { IdentityResolver } from '../intel/identity-resolver';
+import { buildAliasIndex, compactAnnotation } from '../intel/identity-formatter';
 
 export interface BriefingOptions {
   skipEmoji?: boolean;
@@ -338,7 +339,7 @@ export class BriefingGenerator {
     if (combined.length === 0) return '### 今日无有名联系人发言记录';
 
     const lines: string[] = ['### 📋 今日有发言的重要联系人（机械完整列表）', ''];
-    for (const [, info] of combined) {
+    for (const [wxid, info] of combined) {
       const msgs = info.msgs;
       const conversations = new Set(msgs.map(m => m.conversationName));
       const types = new Set(msgs.map(m => m.type));
@@ -352,7 +353,13 @@ export class BriefingGenerator {
       const sample = highlight ? `"${highlight.text.slice(0, 80).replace(/\n/g, ' ')}"` : '（纯多媒体/未提取文本）';
 
       const remarkTag = info.hasRemark ? ' 📌' : '';
-      lines.push(`- **${info.displayName}${remarkTag}** — ${msgs.length} 条 · 跨 ${conversations.size} 个对话 · 最后 ${lastTime} · 类型: ${typesList}`);
+      // Multi-alias annotation (wxid + per-group aliases) — basic function of an analyst tool
+      let annotation = '';
+      if (resolver) {
+        const ident = resolver.get(wxid);
+        if (ident) annotation = compactAnnotation(ident, resolver);
+      }
+      lines.push(`- **${info.displayName}${remarkTag}**${annotation} — ${msgs.length} 条 · 跨 ${conversations.size} 个对话 · 最后 ${lastTime} · 类型: ${typesList}`);
       lines.push(`  代表发言: ${sample}`);
     }
     return lines.join('\n');
@@ -868,20 +875,40 @@ export class BriefingGenerator {
     // Scan raw messages for @ mentions — this is NOT cached, always fresh
     const directMentions = this.scanUserMentions(messages);
 
+    // Build person alias index — basic function of an analyst tool.
+    // Collects wxids of people who actually appeared in today's triaged messages,
+    // then lists those with ≥2 aliases so the reader can cross-reference.
+    let aliasIndex = '';
+    if (this.options.identityResolver) {
+      const appearedWxids = new Set<string>();
+      const userIds = new Set(this.options.userIdentities || []);
+      for (const m of triaged) {
+        if (!m.senderWxid) continue;
+        if (m.senderWxid === this.options.userWxid) continue;
+        if (userIds.has(m.senderWxid)) continue;
+        appearedWxids.add(m.senderWxid);
+      }
+      aliasIndex = buildAliasIndex(appearedWxids, this.options.identityResolver);
+    }
+
     // Compose final document. Order matters for boss UX:
     // 1. 30-sec Tearline (fastest read)
     // 2. Direct @ mentions (raw scan, never cached)
-    // 3. Main brief (full PDB)
-    // 4. Pattern of Life (who said what)
-    // 5. Reflexive Control (what to question)
-    // 6. Bias Audit (self-check)
-    // 7. Shareable Tearline (team-ready, below dashed line)
+    // 3. Person alias index (reference table for multi-alias people)
+    // 4. Main brief (full PDB)
+    // 5. Pattern of Life (who said what)
+    // 6. Reflexive Control (what to question)
+    // 7. Bias Audit (self-check)
+    // 8. Shareable Tearline (team-ready, below dashed line)
     const sections: string[] = [];
     if (tearline) {
       sections.push(`# ⚡ 30 秒速读 — ${date}\n\n${tearline}\n\n---`);
     }
     if (directMentions) {
       sections.push(directMentions + '\n\n---');
+    }
+    if (aliasIndex) {
+      sections.push(aliasIndex + '\n\n---');
     }
     sections.push(mainBrief);
     if (patternOfLife) {

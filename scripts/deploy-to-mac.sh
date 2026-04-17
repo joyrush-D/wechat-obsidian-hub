@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-VAULT_DIR="/Users/joyrush/Documents"
+VAULT_DIR="${HOME}/Documents"
 PLUGIN_DIR="$VAULT_DIR/.obsidian/plugins/wechat-obsidian-hub"
 
 echo "Building plugin..."

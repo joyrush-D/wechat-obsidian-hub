@@ -9,7 +9,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const HOME = process.env.HOME || '/Users/joyrush';
+const HOME = process.env.HOME || '';
 const PLUGIN_DIR = join(HOME, 'Documents/.obsidian/plugins/wechat-obsidian-hub');
 const VAULT_DIR = join(HOME, 'Documents');
 const OUTPUT_FOLDER = 'WeChat-Briefings';

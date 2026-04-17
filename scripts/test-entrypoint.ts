@@ -15,7 +15,7 @@ import { BriefingGenerator } from '../src/ai/briefing-generator';
 import { ExtractionStore } from '../src/intel/extraction-store';
 import type { ParsedMessage } from '../src/types';
 
-const HOME = process.env.HOME || '/Users/joyrush';
+const HOME = process.env.HOME || '';
 const DB_DIR = join(HOME, '.wechat-hub/decrypted');
 const OUTPUT_DIR = join(HOME, 'Documents/WeChat-Briefings');
 const TODAY = new Date().toISOString().slice(0, 10);

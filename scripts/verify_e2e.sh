@@ -9,7 +9,7 @@ cd /home/joyrush/wechat-obsidian-plugin
 node esbuild.config.mjs production 2>/dev/null
 
 # 2. Deploy to Mac
-scp -q main.js mac:/Users/joyrush/Documents/.obsidian/plugins/wechat-obsidian-hub/
+scp -q main.js mac:${HOME}/Documents/.obsidian/plugins/wechat-obsidian-hub/
 
 # 3. Restart Obsidian, trigger command, wait, measure
 ssh mac bash <<'REMOTE'

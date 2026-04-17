@@ -8,7 +8,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 
 import { join } from 'path';
 import { execSync } from 'child_process';
 
-const HOME = process.env.HOME || '/Users/joyrush';
+const HOME = process.env.HOME || '';
 const DB_DIR = join(HOME, '.wechat-hub/decrypted');
 const OUTPUT_DIR = join(HOME, 'Documents/WeChat-Briefings');
 const LM_ENDPOINT = 'http://localhost:1234/v1';

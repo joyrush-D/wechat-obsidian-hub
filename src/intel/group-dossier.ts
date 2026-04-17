@@ -9,6 +9,7 @@ import type { MessageReader } from '../db/message-reader';
 import type { ParsedMessage, Contact } from '../types';
 import { parseMessage } from '../parser/index';
 import type { IdentityResolver } from './identity-resolver';
+import { compactAnnotation } from './identity-formatter';
 
 export interface GroupDossierInput {
   groupWxid: string;           // real wxid like "58263875481@chatroom"
@@ -75,13 +76,16 @@ export function buildGroupDossier(input: GroupDossierInput): string {
     });
   }
 
-  // Aggregations
-  const speakerCounts = new Map<string, number>();
+  // Aggregations — key by wxid so multi-alias people don't get double-counted
+  const speakerStats = new Map<string, { name: string; count: number }>();
   for (const m of parsed) {
-    speakerCounts.set(m.sender, (speakerCounts.get(m.sender) || 0) + 1);
+    const key = m.senderWxid || m.sender;
+    const existing = speakerStats.get(key);
+    if (existing) existing.count++;
+    else speakerStats.set(key, { name: m.sender, count: 1 });
   }
-  const topSpeakers = [...speakerCounts.entries()]
-    .sort((a, b) => b[1] - a[1])
+  const topSpeakers = [...speakerStats.entries()]
+    .sort((a, b) => b[1].count - a[1].count)
     .slice(0, 10);
 
   const links: ParsedMessage[] = parsed.filter(m => m.type === 'link' && m.extra.url && m.extra.unsupported !== '1');
@@ -144,12 +148,17 @@ export function buildGroupDossier(input: GroupDossierInput): string {
   }
   lines.push('');
 
-  // 活跃发言人
+  // 活跃发言人 — annotate multi-alias people with wxid + other-group aliases
   lines.push('## 👥 活跃发言人 Top 10');
   lines.push('');
-  for (const [speaker, count] of topSpeakers) {
-    const pct = Math.round((count / parsed.length) * 100);
-    lines.push(`- **${speaker}**: ${count} 条 (${pct}%)`);
+  for (const [wxid, info] of topSpeakers) {
+    const pct = Math.round((info.count / parsed.length) * 100);
+    let annotation = '';
+    if (identityResolver) {
+      const ident = identityResolver.get(wxid);
+      if (ident) annotation = compactAnnotation(ident, identityResolver);
+    }
+    lines.push(`- **${info.name}**${annotation}: ${info.count} 条 (${pct}%)`);
   }
   lines.push('');
 
