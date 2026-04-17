@@ -12,10 +12,34 @@ export interface ParseResult {
   extra: Record<string, string>;
 }
 
+/**
+ * Resolve message_content, handling WCDB compression (Mac WeChat 4.x).
+ * WCDB_CT_message_content: 0=plain, 1=zlib, 4=zstd
+ */
+function resolveContent(raw: RawMessage): string | null {
+  const ct = raw.wcdb_ct_message_content;
+
+  if (ct && ct > 0 && raw.message_content instanceof Uint8Array) {
+    // Content is compressed by WCDB — decompress first
+    return decompressContent(raw.message_content);
+  }
+
+  if (typeof raw.message_content === 'string') {
+    return raw.message_content;
+  }
+
+  // Uint8Array without WCDB flag — try decompressing anyway
+  if (raw.message_content instanceof Uint8Array && raw.message_content.length > 0) {
+    return decompressContent(raw.message_content);
+  }
+
+  return null;
+}
+
 export function parseMessage(raw: RawMessage): ParseResult {
   const baseType = raw.local_type & 0xFFFF;
-  const content = typeof raw.message_content === 'string' ? raw.message_content : null;
-  let senderWxid = raw.real_sender_id || '';
+  const content = resolveContent(raw);
+  let senderWxid = String(raw.real_sender_id || '');
 
   switch (baseType) {
     case 1: {
@@ -40,8 +64,13 @@ export function parseMessage(raw: RawMessage): ParseResult {
       return { ...parsed, senderWxid };
     }
     case 49: {
+      // App message: try compress_content first (may also be WCDB-compressed)
       let xml: string | null = null;
-      if (raw.compress_content) xml = decompressContent(raw.compress_content);
+      if (raw.compress_content) {
+        xml = raw.compress_content instanceof Uint8Array
+          ? decompressContent(raw.compress_content)
+          : decompressContent(new TextEncoder().encode(raw.compress_content as unknown as string));
+      }
       if (!xml && content) xml = content;
       const parsed = parseAppMessage(xml);
       return { ...parsed, senderWxid };

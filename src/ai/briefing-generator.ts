@@ -1,5 +1,6 @@
 import type { ParsedMessage } from '../types';
 import { LlmClient } from './llm-client';
+import { buildBriefingPrompt, buildBatchPrompt } from './prompt-templates';
 
 export interface BriefingOptions {
   skipEmoji?: boolean;
@@ -105,46 +106,52 @@ export class BriefingGenerator {
       batches.push(currentBatch);
     }
 
-    // Process each batch
+    // Stage 1: Per-batch detailed analysis
+    const batchSummaries: string[] = [];
+
     for (let i = 0; i < batches.length; i++) {
       const batch = batches[i];
       const batchNames = batch.map(b => b.name).join('、');
-      const batchMsgCount = batch.reduce((s, b) => s + b.msgs.length, 0);
 
       await onProgress(
-        briefing + `_正在分析第 ${i + 1}/${batches.length} 批 (${batchNames})..._`,
+        briefing + `_📊 正在分析第 ${i + 1}/${batches.length} 批对话 (${batchNames})..._`,
         false,
       );
 
-      // Format this batch
       const batchText = batch
         .map(b => this.formatConversation(b.name, b.msgs))
         .join('\n\n');
 
-      const prompt = `你是微信消息助手。请总结以下对话的要点，用中文简洁输出。
-每个对话用 "### 对话名" 格式，列出：
-- 主要讨论话题
-- 重要信息或待办
-- 分享的链接（标题+简介）
-不重要的寒暄可以跳过。
-
-${batchText}`;
-
       try {
-        const summary = await llmClient.complete(prompt);
-        briefing += summary + '\n\n';
+        const summary = await llmClient.complete(buildBatchPrompt(batchText));
+        batchSummaries.push(summary);
       } catch (e) {
-        briefing += `> ⚠️ 第 ${i + 1} 批分析失败 (${batchNames}): ${(e as Error).message}\n\n`;
+        batchSummaries.push(`> ⚠️ 批 ${i + 1} 分析失败: ${(e as Error).message}`);
       }
-
-      await onProgress(briefing, i === batches.length - 1);
     }
 
+    // Stage 2: Synthesize into BLUF intelligence brief
+    await onProgress(briefing + `_🎯 正在生成情报简报 (BLUF 格式)..._`, false);
+
+    const allBatchText = batchSummaries.join('\n\n');
+    try {
+      const finalBrief = await llmClient.complete(buildBriefingPrompt(date, allBatchText));
+      briefing += finalBrief;
+    } catch (e) {
+      // If synthesis fails, fall back to raw batch summaries
+      briefing += `## 详细分析\n\n${batchSummaries.join('\n\n')}\n\n> ⚠️ 简报合成失败: ${(e as Error).message}`;
+    }
+
+    await onProgress(briefing, true);
     return briefing;
   }
 
   // Keep simple generate for backward compatibility with tests
   async generate(messages: ParsedMessage[], llmClient: LlmClient, date: string): Promise<string> {
     return this.generateProgressive(messages, llmClient, date, async () => {});
+  }
+
+  buildPrompt(messages: ParsedMessage[], date: string): string {
+    return buildBriefingPrompt(date, this.formatMessagesForAI(messages));
   }
 }

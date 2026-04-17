@@ -398,7 +398,12 @@ export default class OWHPlugin extends Plugin {
 
         for (const raw of rawMessages) {
           const parsed = parseMessage(raw);
-          const senderWxid = parsed.senderWxid || raw.real_sender_id || '';
+          // Resolve sender: parser may extract wxid from content, or use Name2Id mapping
+          let senderWxid = parsed.senderWxid || '';
+          if (!senderWxid || /^\d+$/.test(senderWxid)) {
+            // Integer sender ID → resolve via Name2Id
+            senderWxid = msgReader.resolveSenderId(raw.real_sender_id);
+          }
           const senderContact = contactReader.getContact(senderWxid);
           const sender = senderContact
             ? (senderContact.remark || senderContact.nickName || senderWxid)

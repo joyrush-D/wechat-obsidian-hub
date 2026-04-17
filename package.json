@@ -18,7 +18,8 @@
     "vitest": "^3.0.0"
   },
   "dependencies": {
-    "sql.js": "^1.11.0",
-    "fflate": "^0.8.2"
+    "fflate": "^0.8.2",
+    "fzstd": "^0.1.1",
+    "sql.js": "^1.11.0"
   }
 }

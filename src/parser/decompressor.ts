@@ -1,37 +1,29 @@
 import { unzlibSync, inflateSync } from 'fflate';
+import { decompress as fzstdDecompress } from 'fzstd';
 
-let zstdDecompressor: ((data: Uint8Array) => Uint8Array) | null = null;
+/**
+ * No-op for backward compat (fzstd is synchronous, no init needed).
+ */
+export async function initZstd(): Promise<void> {}
 
-export async function initZstd(): Promise<void> {
-  try {
-    const ZstdCodec = await import('zstd-codec');
-    await new Promise<void>((resolve) => {
-      ZstdCodec.ZstdCodec.run((zstd: any) => {
-        const simple = new zstd.Simple();
-        zstdDecompressor = (data: Uint8Array) => simple.decompress(data);
-        resolve();
-      });
-    });
-  } catch {
-    console.log('OWH: zstd-codec not available');
-  }
-}
-
+/**
+ * Decompress content from compress_content / message_content fields.
+ * Supports zstd (Mac WeChat 4.x WCDB), zlib, and raw deflate.
+ */
 export function decompressContent(data: Uint8Array | null): string | null {
   if (!data || data.length === 0) return null;
 
   // zstd magic: 28 b5 2f fd
   if (data[0] === 0x28 && data[1] === 0xb5 && data[2] === 0x2f && data[3] === 0xfd) {
-    if (zstdDecompressor) {
-      try {
-        const d = zstdDecompressor(data);
-        return new TextDecoder('utf-8', { fatal: false }).decode(d);
-      } catch { /* fall through */ }
+    try {
+      const d = fzstdDecompress(data);
+      return new TextDecoder('utf-8', { fatal: false }).decode(d);
+    } catch {
+      return null;
     }
-    return null;
   }
 
-  // zlib: 78 9c or 78 01
+  // zlib: 78 9c / 78 01 / 78 da
   if (data[0] === 0x78 && (data[1] === 0x9c || data[1] === 0x01 || data[1] === 0xda)) {
     try {
       const d = unzlibSync(data);

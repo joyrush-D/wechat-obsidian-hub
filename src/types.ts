@@ -66,8 +66,9 @@ export interface RawMessage {
   local_id: number;
   local_type: number;
   create_time: number;
-  real_sender_id: string;
+  real_sender_id: number | string;  // integer on Mac (Name2Id rowid), wxid string on Windows
   message_content: string | Uint8Array | null;
   compress_content: Uint8Array | null;
   packed_info_data: Uint8Array | null;
+  wcdb_ct_message_content?: number;  // WCDB compression type: 0=none, 4=zstd
 }
