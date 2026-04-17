@@ -23,6 +23,8 @@ import { VoiceProcessor } from './media/voice-processor';
 import { ImageProcessor } from './media/image-processor';
 import { WeChatFileLocator } from './media/wechat-file-locator';
 import { SilkDecoder } from './media/silk-decoder';
+import { EvidenceStore } from './core/storage/evidence-store';
+import { buildFindingsExtractionPrompt, parseFindings } from './core/sat/finding-extractor';
 import type { ParsedMessage } from './types';
 
 export default class OWHPlugin extends Plugin {
@@ -157,6 +159,15 @@ export default class OWHPlugin extends Plugin {
               }
             },
           );
+
+          // v0.5.0 — Extract structured Findings from the briefing, persist to
+          // EvidenceStore so they can be cited / calibrated later. Best-effort:
+          // failures here must not break the visible briefing.
+          try {
+            await this.extractAndPersistFindings(briefing, llmClient, fileSlug);
+          } catch (e) {
+            console.error('OWH: Finding extraction failed (non-fatal):', e);
+          }
         } catch (err) {
           console.error('OWH: Error generating briefing', err);
           new Notice(`OWH: Error — ${(err as Error).message}`);
@@ -896,6 +907,57 @@ export default class OWHPlugin extends Plugin {
       ocrLanguage: s.ocrLanguage,
       concurrency: 4,
     });
+  }
+
+  /**
+   * v0.5.0 — Extract structured Finding[] from a generated briefing via a
+   * second LLM call, then persist to EvidenceStore. Runs AFTER the visible
+   * briefing is saved, so a failure here is purely a background miss.
+   */
+  private async extractAndPersistFindings(
+    briefing: string,
+    llmClient: LlmClient,
+    reportSlug: string,
+  ): Promise<void> {
+    const storeDir = join(process.env.HOME || '', '.wechat-hub', 'evidence-store');
+    const store = new EvidenceStore(storeDir);
+
+    new Notice('OWH: 正在抽取结构化判断...');
+    const extractionPrompt = buildFindingsExtractionPrompt(briefing);
+    let rawJson: string;
+    try {
+      rawJson = await llmClient.complete(extractionPrompt);
+    } catch (e) {
+      console.error('OWH: Finding extraction LLM call failed:', e);
+      new Notice(`OWH: 判断抽取失败 (LLM): ${(e as Error).message.slice(0, 80)}`, 6000);
+      return;
+    }
+
+    const { findings, errors } = parseFindings(rawJson, {
+      reportId: `report:wechat:${reportSlug}`,
+      createdAt: new Date().toISOString(),
+    });
+
+    if (errors.length > 0) {
+      console.warn('OWH: Finding extraction partial errors:', errors.slice(0, 8));
+    }
+
+    let persisted = 0;
+    for (const f of findings) {
+      try {
+        store.putFinding(f);
+        persisted++;
+      } catch (e) {
+        console.warn(`OWH: failed to persist finding ${f.id}:`, e);
+      }
+    }
+
+    const stats = store.stats();
+    console.log(`OWH: EvidenceStore now has ${stats.findings} findings total`);
+    new Notice(
+      `OWH: 抽取 ${findings.length} 条判断${errors.length ? `（${errors.length} 条忽略）` : ''}，累计 ${stats.findings} 条`,
+      5000,
+    );
   }
 
   /** Best-effort detection of the WeChat media root (Mac-only, xwechat_files layout). */
