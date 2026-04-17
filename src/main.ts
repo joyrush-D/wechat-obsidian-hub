@@ -177,7 +177,8 @@ export default class OWHPlugin extends Plugin {
           }
           const store = new ExtractionStore(process.env.HOME || '');
           new Notice('OWH: 正在生成周报...');
-          const brief = await generateWeeklyRollup(store, llmClient, 7);
+          const resolver = await this.ensureIdentityResolver();
+          const brief = await generateWeeklyRollup(store, llmClient, 7, resolver ?? undefined);
           const now = new Date();
           const slug = `weekly-${now.toISOString().slice(0, 10)}-${now.toTimeString().slice(0, 5).replace(':', '')}`;
           await this.saveBriefing(slug, brief);
@@ -208,7 +209,8 @@ export default class OWHPlugin extends Plugin {
           }
           const store = new ExtractionStore(process.env.HOME || '');
           new Notice(`OWH: 正在生成"${topic}"专题简报 (过去 ${daysNum} 天)...`);
-          const brief = await generateTopicBrief(store, llmClient, topic, daysNum);
+          const resolver = await this.ensureIdentityResolver();
+          const brief = await generateTopicBrief(store, llmClient, topic, daysNum, resolver ?? undefined);
           const safeName = topic.replace(/[\\/:*?"<>|]/g, '_').slice(0, 40);
           const now = new Date();
           const slug = `topic-${safeName}-${now.toISOString().slice(0, 10)}-${now.toTimeString().slice(0, 5).replace(':', '')}`;
@@ -242,7 +244,8 @@ export default class OWHPlugin extends Plugin {
           }
           const store = new ExtractionStore(process.env.HOME || '');
           new Notice(`OWH: 正在对"${topic}"做 ACH 矩阵分析...`);
-          const brief = await runACHAnalysis(store, llmClient, topic, daysNum);
+          const resolver = await this.ensureIdentityResolver();
+          const brief = await runACHAnalysis(store, llmClient, topic, daysNum, resolver ?? undefined);
           const safeName = topic.replace(/[\\/:*?"<>|]/g, '_').slice(0, 40);
           const now = new Date();
           const slug = `ach-${safeName}-${now.toISOString().slice(0, 10)}-${now.toTimeString().slice(0, 5).replace(':', '')}`;
@@ -442,6 +445,29 @@ export default class OWHPlugin extends Plugin {
 
     await this.app.vault.modify(file, content);
     new Notice(`OWH: 档案已生成 ${displayName}`, 4000);
+  }
+
+  /**
+   * Build (or reuse) the IdentityResolver from current decrypted contact.db.
+   * Called on-demand by any command that needs canonical identity.
+   */
+  private async ensureIdentityResolver(): Promise<IdentityResolver | null> {
+    if (this.identityResolver) return this.identityResolver;
+    const dbDir = this.settings.decryptedDbDir;
+    if (!dbDir) return null;
+    const contactPath = join(dbDir, 'contact', 'contact.db');
+    if (!existsSync(contactPath)) return null;
+    try {
+      await this.ensureDbReady();
+      const cdb = this.dbConnector.loadFromBytes(new Uint8Array(readFileSync(contactPath)));
+      const reader = new ContactReader(cdb);
+      this.identityResolver = new IdentityResolver(reader);
+      cdb.close();
+      return this.identityResolver;
+    } catch (e) {
+      console.error('OWH: ensureIdentityResolver failed:', e);
+      return null;
+    }
   }
 
   /** Lazy-init the DB connector on first use */

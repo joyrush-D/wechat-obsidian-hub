@@ -7,8 +7,8 @@
  *   - remark (alias you set for them)
  *   - per-group nicknames (different in each group they're in)
  *
- * Without resolution, the system can't tell "Dexter", "罗俊", "罗舒扬爸爸",
- * "猫大师" all refer to the same person.
+ * Without resolution, the system can't tell that multiple per-group
+ * nicknames all refer to the same underlying person.
  *
  * This module builds a complete alias → wxid index at load time, and exposes
  * lookup by ANY alias to retrieve the authoritative wxid + all known names.

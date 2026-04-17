@@ -178,7 +178,9 @@ async function main() {
   const groupsDir = join(VAULT_DIR, 'WeChat-Groups');
   mkdirSync(groupsDir, { recursive: true });
 
-  const testGroup = '印尼 七重 领科 for geely bbc';
+  // Change this to a real group name from your own data when testing locally.
+  // Default is left generic to avoid exposing anything specific in public repo.
+  const testGroup = process.env.OWH_TEST_GROUP || '<YOUR_GROUP_NAME>';
   const dossierPath = join(groupsDir, `${testGroup}.md`);
 
   // Step 1: simulate Obsidian creating an empty note when user clicks wikilink

@@ -1,11 +1,24 @@
 # Changelog
 
+## [0.2.1] - 2026-04-17
+
+### Changed
+- **Retrospective commands use IdentityResolver**:
+  - Weekly Rollup: passes resolver to LLM with hint to merge same-person-different-names
+  - Topic Brief: if keyword matches a person, auto-expands search to ALL their aliases
+    (e.g., searching for a contact by one nickname also finds discussions using
+    their other group-specific nicknames)
+  - ACH Analysis: same subject-centric expansion
+  - Output headers now show which aliases were searched
+- **Shared ensureIdentityResolver() helper** — built on-demand, cached on plugin instance
+- **@ section header trimmed** — no longer lists all user aliases (noise)
+
 ## [0.2.0] - 2026-04-17
 
 ### Added
 - **IdentityResolver** — system-wide authoritative person index
   - Indexes every wxid with ALL its aliases (contact, nickName, remark, per-group nicknames)
-  - For current user: discovers up to 25 per-group aliases (e.g., "罗俊", "广和通-罗俊", "罗舒扬爸爸", "Dexter-GCC运营商")
+  - Each user may have dozens of per-group nicknames (name varies by group context)
   - Applied in: message parsing, Pattern of Life, @mention scan, Source Trust, Group Dossier
 - **Lazy Group Dossier** — `[[WeChat-Groups/群名]]` wikilinks in briefings auto-populate on first click
   - 7-day activity with ASCII bar chart
