@@ -29,6 +29,7 @@ import { identityToActor } from './core/identity/actor-factory';
 import { messageToObject } from './core/messaging/object-factory';
 import { collectEvidence, runAch } from './core/sat/ach-runner';
 import { generateDissentingView } from './core/sat/devils-advocate';
+import { runTeamAb, renderTeamAbMarkdown } from './core/sat/team-ab';
 import { KENT_ZH_LABEL } from './core/types/finding';
 import type { Finding } from './core/types/finding';
 import { CalibrationLog, type FindingOutcome } from './core/calibration/calibration-log';
@@ -286,6 +287,49 @@ export default class OWHPlugin extends Plugin {
           new Notice(`OWH: ACH 分析已生成 → ${this.settings.briefingFolder}/${slug}.md`, 6000);
         } catch (err) {
           console.error('OWH: ACH analysis failed', err);
+          new Notice(`OWH: Error — ${(err as Error).message}`);
+        }
+      },
+    });
+
+    // Command: Team A / Team B (v0.8.2 — parallel independent analyses)
+    this.addCommand({
+      id: 'run-team-ab',
+      name: 'Run Team A / Team B (parallel independent analyses)',
+      callback: async () => {
+        try {
+          const topic = await this.promptForInput(
+            'Team A / B 分析主题',
+            '会从 EvidenceStore 检索相关证据，然后两组 LLM 独立分析',
+          );
+          if (!topic) return;
+          const llmClient = new LlmClient(this.settings.aiEndpoint, this.settings.aiModel);
+          if (!(await llmClient.isAvailable())) {
+            new Notice('OWH: LM Studio 不可用'); return;
+          }
+          const storeDir = join(process.env.HOME || '', '.wechat-hub', 'evidence-store');
+          const store = new EvidenceStore(storeDir);
+          const evidence = collectEvidence(store, topic, { maxEvidence: 15 });
+          if (evidence.length < 3) {
+            new Notice(`OWH: 未找到足够证据（${evidence.length} 条，需要 ≥3）`, 8000);
+            return;
+          }
+          const evText = evidence.map((e, i) =>
+            `${i + 1}. [${e.entityId}] ${e.senderName ? '**' + e.senderName + '**: ' : ''}${e.description}`,
+          ).join('\n');
+
+          new Notice(`OWH: Team A/B 分析"${topic}" — ${evidence.length} 条证据，独立两组并发...`);
+          const llmAdapter = { complete: (p: string) => llmClient.complete(p) };
+          const report = await runTeamAb(topic, evText, llmAdapter);
+          const md = renderTeamAbMarkdown(report);
+          const safeName = topic.replace(/[\\/:*?"<>|]/g, '_').slice(0, 40);
+          const now = new Date();
+          const slug = `team-ab-${safeName}-${now.toISOString().slice(0, 10)}-${now.toTimeString().slice(0, 5).replace(':', '')}`;
+          await this.saveBriefing(slug, md);
+          const status = report.teamA && report.teamB ? '两组都成功' : '部分输出';
+          new Notice(`OWH: Team A/B 完成（${status}）→ ${this.settings.briefingFolder}/${slug}.md`, 6000);
+        } catch (err) {
+          console.error('OWH: Team A/B failed', err);
           new Notice(`OWH: Error — ${(err as Error).message}`);
         }
       },
