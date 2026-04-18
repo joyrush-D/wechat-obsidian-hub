@@ -30,6 +30,10 @@ export interface OWHSettings {
 
   // WeChat media root (for voice/image file resolution)
   wechatMediaRoot: string;         // auto-detected from wechatDataDir if empty
+
+  // v0.8.1 — Devil's Advocate (multi-agent adversarial reasoning)
+  enableDevilsAdvocate: boolean;   // default off (extra LLM call per finding)
+  devilsAdvocateTopN: number;      // how many top findings get a DA pass
 }
 
 export const DEFAULT_SETTINGS: OWHSettings = {
@@ -59,6 +63,9 @@ export const DEFAULT_SETTINGS: OWHSettings = {
 
   mediaCacheDir: '',               // empty = default to ~/.wechat-hub/media-cache
   wechatMediaRoot: '',
+
+  enableDevilsAdvocate: false,
+  devilsAdvocateTopN: 3,
 };
 
 export interface Contact {

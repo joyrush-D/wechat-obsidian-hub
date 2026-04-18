@@ -28,6 +28,8 @@ import { buildFindingsExtractionPrompt, parseFindings } from './core/sat/finding
 import { identityToActor } from './core/identity/actor-factory';
 import { messageToObject } from './core/messaging/object-factory';
 import { collectEvidence, runAch } from './core/sat/ach-runner';
+import { generateDissentingView } from './core/sat/devils-advocate';
+import { KENT_ZH_LABEL } from './core/types/finding';
 import type { ParsedMessage } from './types';
 
 export default class OWHPlugin extends Plugin {
@@ -1060,12 +1062,105 @@ export default class OWHPlugin extends Plugin {
       }
     }
 
+    // v0.8.1 — Devil's Advocate pass on top-N findings (opt-in)
+    if (this.settings.enableDevilsAdvocate && findings.length > 0) {
+      try {
+        await this.runDevilsAdvocate(findings, llmClient, store, reportSlug);
+      } catch (e) {
+        console.error('OWH: Devil\'s Advocate pass failed (non-fatal):', e);
+      }
+    }
+
     const stats = store.stats();
     console.log(`OWH: EvidenceStore — ${stats.actors} actors, ${stats.objects} objects, ${stats.findings} findings`);
     new Notice(
       `OWH: 抽取 ${findings.length} 条判断${errors.length ? `（${errors.length} 条忽略）` : ''}，累计 ${stats.findings} 条 | 证据库 ${stats.actors} actors · ${stats.objects} objects`,
       6000,
     );
+  }
+
+  /**
+   * v0.8.1 — Run Devil's Advocate on the top-N highest-confidence findings,
+   * attach DissentingView to each, re-persist, and append a structured
+   * dissent section to the briefing file.
+   */
+  private async runDevilsAdvocate(
+    findings: import('./core/types/finding').Finding[],
+    llmClient: LlmClient,
+    store: EvidenceStore,
+    reportSlug: string,
+  ): Promise<void> {
+    const topN = Math.max(1, this.settings.devilsAdvocateTopN || 3);
+    // Rank by probability midpoint × evidence count (more confident + better-
+    // supported judgments are more important to challenge)
+    const scored = findings.map(f => {
+      const mid = (f.probRange[0] + f.probRange[1]) / 2;
+      return { f, score: mid * Math.max(1, f.evidenceRefs.length) };
+    });
+    scored.sort((a, b) => b.score - a.score);
+    const targets = scored.slice(0, topN).map(x => x.f);
+
+    new Notice(`OWH: Devil's Advocate 对 top ${targets.length} 判断生成反方视角...`);
+    const llmAdapter = { complete: (p: string) => llmClient.complete(p) };
+    const sections: string[] = [];
+    let withDissent = 0;
+
+    for (const f of targets) {
+      const dv = await generateDissentingView(f, llmAdapter);
+      if (dv) {
+        const updated = { ...f, dissentingView: dv };
+        try { store.putFinding(updated, { allowOverwrite: true }); } catch { /* ignore */ }
+        sections.push(this.formatDissentSection(updated, dv));
+        withDissent++;
+      } else {
+        sections.push(`### ❌ DA 失败: ${f.judgment.slice(0, 50)}...\n\n*Devil's Advocate 未能生成结构化反方（LLM 输出无效或为空）*\n`);
+      }
+    }
+
+    if (sections.length > 0) {
+      const folder = this.settings.briefingFolder;
+      const filePath = `${folder}/${reportSlug}.md`;
+      try {
+        const file = this.app.vault.getAbstractFileByPath(filePath);
+        if (file) {
+          const existing = await this.app.vault.read(file as any);
+          const appendix = '\n\n---\n\n## 🤔 Devil\'s Advocate 详细（v0.8.1）\n\n' +
+            '> 对置信度最高的 ' + targets.length + ' 条判断，独立 LLM context 强制生成反方视角（Heuer "第十人" 原则）。\n\n' +
+            sections.join('\n');
+          await this.app.vault.modify(file as any, existing + appendix);
+        }
+      } catch (e) {
+        console.error('OWH: failed to append DA appendix:', e);
+      }
+    }
+
+    new Notice(`OWH: Devil's Advocate ${withDissent}/${targets.length} 条判断有反方`, 4000);
+  }
+
+  private formatDissentSection(
+    finding: import('./core/types/finding').Finding,
+    dv: NonNullable<import('./core/types/finding').Finding['dissentingView']>,
+  ): string {
+    const origLabel = KENT_ZH_LABEL[finding.kentPhrase] || finding.kentPhrase;
+    const dvLabel = KENT_ZH_LABEL[dv.kentPhrase] || dv.kentPhrase;
+    const lines: string[] = [];
+    lines.push(`### ${finding.judgment}`);
+    lines.push('');
+    lines.push(`**原判断**: ${origLabel} (${finding.probRange[0]}%-${finding.probRange[1]}%) [${finding.sourceGrade}]`);
+    lines.push('');
+    lines.push(`**🤔 反方 (Devil's Advocate)**: ${dvLabel} (${dv.probRange[0]}%-${dv.probRange[1]}%)`);
+    lines.push('');
+    lines.push(`> ${dv.statement}`);
+    lines.push('');
+    if (dv.keyEvidenceRefs.length > 0) {
+      lines.push('**反方引用的证据**:');
+      for (const r of dv.keyEvidenceRefs) {
+        const stanceLabel = r.stance === 'contradicts' ? '反驳原判断' : r.stance === 'supports' ? '支持反方' : '中性';
+        const quote = r.quote ? ` — "${r.quote}"` : '';
+        lines.push(`- \`${r.entityId}\` [${r.grade}] (${stanceLabel})${quote}`);
+      }
+    }
+    return lines.join('\n');
   }
 
   /** Best-effort detection of the WeChat media root (Mac-only, xwechat_files layout). */

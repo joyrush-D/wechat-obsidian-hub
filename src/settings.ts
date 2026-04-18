@@ -341,6 +341,25 @@ export class OWHSettingTab extends PluginSettingTab {
         await this.plugin.saveSettings();
       }));
 
+    // --- Section: 情报方法论 (v0.8.x) ---
+    containerEl.createEl('h3', { text: '情报方法论' });
+
+    new Setting(containerEl)
+      .setName('Devil\'s Advocate（反方视角）')
+      .setDesc('对每天置信度最高的几条判断，独立 LLM context 强制生成反方解读（Heuer "第十人" 原则）。每条多花 1 次 LLM 调用。')
+      .addToggle(t => t.setValue(this.plugin.settings.enableDevilsAdvocate).onChange(async v => {
+        this.plugin.settings.enableDevilsAdvocate = v;
+        await this.plugin.saveSettings();
+      }));
+
+    new Setting(containerEl)
+      .setName('反方视角覆盖范围 (top N 判断)')
+      .setDesc(`对置信度最高的多少条判断生成反方（当前: ${this.plugin.settings.devilsAdvocateTopN}）`)
+      .addSlider(s => s.setLimits(1, 8, 1).setValue(this.plugin.settings.devilsAdvocateTopN).setDynamicTooltip().onChange(async v => {
+        this.plugin.settings.devilsAdvocateTopN = v;
+        await this.plugin.saveSettings();
+      }));
+
     // --- Quick Actions ---
     containerEl.createEl('h3', { text: '快速操作' });
 
