@@ -38,6 +38,10 @@ export interface OWHSettings {
   // v0.10.0 — Critic Agent (Hermes tool-calling fact-checker)
   enableCriticAgent: boolean;
   criticAgentModel: string;        // empty = whatever is loaded; recommend hermes-4
+
+  // v0.11.1 — Obsidian Daily Notes integration
+  dailyNotesFolder: string;        // empty = vault root (matches Obsidian default)
+  dailyNotesFormat: string;        // YYYY-MM-DD by default
 }
 
 export const DEFAULT_SETTINGS: OWHSettings = {
@@ -73,6 +77,9 @@ export const DEFAULT_SETTINGS: OWHSettings = {
 
   enableCriticAgent: false,
   criticAgentModel: '',
+
+  dailyNotesFolder: '',
+  dailyNotesFormat: 'YYYY-MM-DD',
 };
 
 export interface Contact {

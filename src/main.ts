@@ -37,6 +37,13 @@ import { CriticAgentV1 } from './core/agent/critic-agent-v1';
 import { renderCritiqueMarkdown } from './core/agent/critic-agent';
 import { enrichWithPersonWikilinks, type PersonMention } from './obsidian/wikilink-enricher';
 import { renderPersonProfile, updatePersonProfile, extractExistingBriefingSlugs } from './obsidian/person-profile';
+import {
+  formatDate as formatDailyDate,
+  dailyNotePath,
+  pickLatestBriefingForDate,
+  buildBriefingSection,
+  insertOrReplaceBriefingSection,
+} from './obsidian/daily-note';
 import { CalibrationLog, type FindingOutcome } from './core/calibration/calibration-log';
 import type { ParsedMessage } from './types';
 
@@ -420,6 +427,67 @@ export default class OWHPlugin extends Plugin {
           new Notice(`OWH: Team A/B 完成（${status}）→ ${this.settings.briefingFolder}/${slug}.md`, 6000);
         } catch (err) {
           console.error('OWH: Team A/B failed', err);
+          new Notice(`OWH: Error — ${(err as Error).message}`);
+        }
+      },
+    });
+
+    // Command: Insert today's briefing into Daily Note (v0.11.1)
+    this.addCommand({
+      id: 'insert-briefing-into-daily-note',
+      name: 'Insert today\'s briefing into Daily Note',
+      callback: async () => {
+        try {
+          const now = new Date();
+          const datePrefix = formatDailyDate(now, 'YYYY-MM-DD');
+
+          // Find today's latest briefing
+          const briefingFolder = this.settings.briefingFolder;
+          const folderExists = await this.app.vault.adapter.exists(briefingFolder);
+          if (!folderExists) {
+            new Notice(`OWH: 简报目录不存在: ${briefingFolder}`);
+            return;
+          }
+          const allFiles = await (this.app.vault.adapter as any).list(briefingFolder);
+          const briefingFiles: string[] = (allFiles?.files || [])
+            .map((p: string) => p.split('/').pop())
+            .filter((f: string) => f && f.endsWith('.md'));
+          const latest = pickLatestBriefingForDate(briefingFiles, datePrefix, briefingFolder);
+          if (!latest) {
+            new Notice(`OWH: 今日 (${datePrefix}) 还没有简报。先 Generate WeChat Briefing。`, 6000);
+            return;
+          }
+
+          // Resolve daily note path
+          const noteFolder = this.settings.dailyNotesFolder || '';
+          const noteFormat = this.settings.dailyNotesFormat || 'YYYY-MM-DD';
+          const notePath = dailyNotePath(now, noteFolder, noteFormat);
+
+          // Ensure folder exists if user configured a non-root one
+          if (noteFolder) {
+            const nfExists = await this.app.vault.adapter.exists(noteFolder);
+            if (!nfExists) await this.app.vault.createFolder(noteFolder);
+          }
+
+          // Read or create the daily note
+          let existingFile = this.app.vault.getAbstractFileByPath(notePath);
+          let existingContent = '';
+          if (existingFile) {
+            existingContent = await this.app.vault.read(existingFile as any);
+          }
+
+          const section = buildBriefingSection(latest, now);
+          const newContent = insertOrReplaceBriefingSection(existingContent, section);
+
+          if (existingFile) {
+            await this.app.vault.modify(existingFile as any, newContent);
+          } else {
+            await this.app.vault.create(notePath, newContent);
+          }
+
+          new Notice(`OWH: 简报已嵌入 → ${notePath}`, 5000);
+        } catch (err) {
+          console.error('OWH: insert daily note failed', err);
           new Notice(`OWH: Error — ${(err as Error).message}`);
         }
       },
