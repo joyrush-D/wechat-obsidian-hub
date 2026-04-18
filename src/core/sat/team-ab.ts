@@ -222,13 +222,28 @@ export async function runTeamAb(
 ): Promise<TeamAbReport> {
   // CRITICAL: independent calls. Even though we sequence them here, each
   // call has zero prior context — it does not see the other team's output.
+  // Each team gets a one-shot retry if its first response fails to parse —
+  // LLMs occasionally drop the JSON on the floor and a second attempt fixes it.
   const [aOut, bOut] = await Promise.all([
     llm.complete(buildTeamAPrompt(topic, evidence)),
     llm.complete(buildTeamBPrompt(topic, evidence)),
   ]);
 
-  const teamA = parseTeamFinding('A', aOut);
-  const teamB = parseTeamFinding('B', bOut);
+  let teamA = parseTeamFinding('A', aOut);
+  let teamB = parseTeamFinding('B', bOut);
+
+  if (!teamA) {
+    try {
+      const retryOut = await llm.complete(buildTeamAPrompt(topic, evidence));
+      teamA = parseTeamFinding('A', retryOut);
+    } catch { /* swallow */ }
+  }
+  if (!teamB) {
+    try {
+      const retryOut = await llm.complete(buildTeamBPrompt(topic, evidence));
+      teamB = parseTeamFinding('B', retryOut);
+    } catch { /* swallow */ }
+  }
 
   let agreements: string[] = [];
   let disagreements: string[] = [];

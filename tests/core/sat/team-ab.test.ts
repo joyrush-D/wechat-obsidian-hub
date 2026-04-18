@@ -154,19 +154,30 @@ describe('runTeamAb', () => {
     expect(llm.complete).toHaveBeenCalledTimes(3);
   });
 
-  it('skips judge when one team output fails', async () => {
-    const llm = makeLlm(['INVALID', VALID_TEAM_B]);
+  it('retries failed team once, skips judge if still invalid', async () => {
+    // First two calls: A invalid, B valid (parallel)
+    // Third call: A retry, also invalid → judge skipped
+    const llm = makeLlm(['INVALID', VALID_TEAM_B, 'STILL INVALID']);
     const r = await runTeamAb('topic', 'ev', llm);
     expect(r.teamA).toBeNull();
     expect(r.teamB).not.toBeNull();
     expect(r.agreements).toEqual([]);
-    expect(r.disagreements).toEqual([]);
-    // Only 2 LLM calls — judge skipped because parsing failed
-    expect(llm.complete).toHaveBeenCalledTimes(2);
+    // 2 parallel + 1 retry for failed team A = 3 calls. Judge skipped.
+    expect(llm.complete).toHaveBeenCalledTimes(3);
   });
 
-  it('returns valid report shape even when both teams fail', async () => {
-    const llm = makeLlm(['INVALID', 'ALSO INVALID']);
+  it('retry succeeds: judge runs after recovered team output', async () => {
+    // A invalid first, B valid first (parallel) → A retry succeeds → judge runs
+    const llm = makeLlm(['INVALID', VALID_TEAM_B, VALID_TEAM_A, VALID_JUDGE]);
+    const r = await runTeamAb('topic', 'ev', llm);
+    expect(r.teamA).not.toBeNull();
+    expect(r.teamB).not.toBeNull();
+    expect(r.agreements).toHaveLength(1);
+    expect(llm.complete).toHaveBeenCalledTimes(4);
+  });
+
+  it('returns valid report shape even when both teams fail (incl. retries)', async () => {
+    const llm = makeLlm(['INVALID', 'ALSO INVALID', 'STILL BAD', 'NOPE']);
     const r = await runTeamAb('topic', 'ev', llm);
     expect(r.teamA).toBeNull();
     expect(r.teamB).toBeNull();

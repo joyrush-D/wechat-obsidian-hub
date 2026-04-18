@@ -19,6 +19,7 @@ import type { WxObject } from '../types/domain';
 import type { AchAnalysis, AchEvidence } from './ach';
 import { analyzeMatrix, renderAchMarkdown } from './ach';
 import { buildHypothesisGenerationPrompt, parseHypotheses, buildEvidenceMarkingPrompt, parseMarkings, composeMatrix } from './ach-llm';
+import type { EvidenceMark } from './ach';
 
 /** Minimal LLM interface — matches LlmClient but decoupled for testability. */
 export interface AchLlm {
@@ -30,6 +31,15 @@ export interface AchRunnerOptions {
   minEvidenceLength?: number;
   /** Cap on evidence items fed to the matrix (too many blows the LLM context). */
   maxEvidence?: number;
+}
+
+/** Fraction of (hypothesis × evidence) cells marked C or I (not N). */
+function diversityRatio(markings: Record<string, EvidenceMark>): number {
+  const total = Object.keys(markings).length;
+  if (total === 0) return 0;
+  let nonN = 0;
+  for (const v of Object.values(markings)) if (v !== 'N') nonN++;
+  return nonN / total;
 }
 
 /** Collect evidence from store by keyword substring match. */
@@ -106,10 +116,24 @@ export async function runAch(
     throw new Error(`ACH requires ≥2 hypotheses; LLM returned ${hypotheses.length}`);
   }
 
-  // Step 3: evidence marking
+  // Step 3: evidence marking — retry once if all-N density is too high
+  // (LLM commonly defaults to N when uncertain; that produces a useless
+  // matrix with all hypotheses tied at 0/0)
   const markPrompt = buildEvidenceMarkingPrompt(topic, hypotheses, evidence);
-  const markJson = await llm.complete(markPrompt);
-  const markings = parseMarkings(markJson);
+  let markJson = await llm.complete(markPrompt);
+  let markings = parseMarkings(markJson);
+  const totalCells = hypotheses.length * evidence.length;
+  if (totalCells > 0 && diversityRatio(markings) < 0.3) {
+    // Too lazy — strengthen instruction and retry once
+    const retryPrompt = markPrompt + '\n\n# 重要警告\n\n你上一次的标注 C+I 占比过低（<30%）—— 这意味着矩阵几乎无判别力。' +
+      '**请重新评估**，对每条证据至少给一个 C 或一个 I 标签。如果证据真的全 N，那这条证据根本不该入矩阵。';
+    const retryJson = await llm.complete(retryPrompt);
+    const retryMarkings = parseMarkings(retryJson);
+    if (diversityRatio(retryMarkings) > diversityRatio(markings)) {
+      markJson = retryJson;
+      markings = retryMarkings;
+    }
+  }
 
   // Step 4: compose + analyze (mechanical)
   const matrix = composeMatrix(hypotheses, evidence, markings);
