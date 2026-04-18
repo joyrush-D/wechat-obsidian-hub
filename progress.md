@@ -50,5 +50,32 @@ All 6 user identities → 0 wikilinks. Other names still wikilinked. ✅
 - Build: 775KB
 
 ## Phase 3: Insert into Daily Note command
-status: in_progress
-started: now
+status: complete
+completed: 2026-04-18 (commit e198e34)
+Mac E2E verified: user content preserved, transclusion inserted, idempotent across 2 runs.
+
+## Phase 2: Topic wikilinks + topic profile pages
+status: code complete + pushed (commit 77f1d14), BUT user flagged value gap
+completed: 2026-04-18
+Mac E2E evidence: 4 topic files created (汽车产业, 房地产, 地缘政治, 人工智能), 4 wikilinks in briefing.
+
+## 🛑 User pushback 2026-04-18
+> "你日报、周报都还做得不好，你那什么 WeChat people、WeChat topic，我看也没啥效果呀。"
+
+User says daily/weekly briefings aren't good yet, and the People/Topics profile pages produce no felt effect.
+
+### Honest self-assessment
+I've been shipping structural features (critic agent, wikilinks, profile pages, evidence store, ACH, Team A/B, calibration) assuming more = better. User is saying none of it delivers his morning-routine utility.
+
+### What I think the gap is
+- I built a CIA PDB for someone who actually needs "what requires my attention in the next hour"
+- 13-section daily briefing is too much to scan
+- Profile pages are accessible via wikilink but never actively helpful
+- Weekly rollup format inherits same verbosity
+
+### Next action
+STOP building, ASK user:
+1. Morning workflow — what ONE question would you want the briefing to answer? (probably "who am I letting down by not responding?" or "what's breaking that needs my input?")
+2. Current structure — which sections do you actually read vs. skim vs. skip?
+3. People pages — do you ever open them? What would make you?
+4. Is there ONE feature you'd pay for, and ONE you'd delete tomorrow?
