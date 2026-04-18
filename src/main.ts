@@ -30,6 +30,7 @@ import { messageToObject } from './core/messaging/object-factory';
 import { collectEvidence, runAch } from './core/sat/ach-runner';
 import { generateDissentingView } from './core/sat/devils-advocate';
 import { runTeamAb, renderTeamAbMarkdown } from './core/sat/team-ab';
+import { GdeltSource } from './core/sources/gdelt-source';
 import { KENT_ZH_LABEL } from './core/types/finding';
 import type { Finding } from './core/types/finding';
 import { CalibrationLog, type FindingOutcome } from './core/calibration/calibration-log';
@@ -288,6 +289,83 @@ export default class OWHPlugin extends Plugin {
         } catch (err) {
           console.error('OWH: ACH analysis failed', err);
           new Notice(`OWH: Error — ${(err as Error).message}`);
+        }
+      },
+    });
+
+    // Command: Search GDELT (v0.9.0 — second source adapter)
+    this.addCommand({
+      id: 'search-gdelt',
+      name: 'Search GDELT (global news, persists to EvidenceStore)',
+      callback: async () => {
+        try {
+          const query = await this.promptForInput(
+            'GDELT 关键词',
+            '例如：DeepSeek / Ghana solar / Trump tariff',
+          );
+          if (!query) return;
+          const daysStr = await this.promptForInput('回溯天数', '默认 7', '7');
+          const days = parseInt(daysStr || '7', 10) || 7;
+          const since = new Date(Date.now() - days * 86400000).toISOString();
+
+          new Notice(`OWH: 查询 GDELT "${query}" (过去 ${days} 天)...`);
+          const gdelt = new GdeltSource();
+          const storeDir = join(process.env.HOME || '', '.wechat-hub', 'evidence-store');
+          const store = new EvidenceStore(storeDir);
+          let imported = 0;
+          let skipped = 0;
+          for await (const batch of gdelt.fetch({ since, filter: { query } })) {
+            for (const obj of batch) {
+              try {
+                store.put(obj, { allowOverwrite: true });
+                imported++;
+              } catch {
+                skipped++;
+              }
+            }
+          }
+          if (imported === 0) {
+            new Notice(`OWH: GDELT 无结果 "${query}"`, 6000);
+            return;
+          }
+
+          // Render a brief summary doc
+          const allGdelt = store.filter('object', (o: any) => o.sourceAdapter === 'gdelt');
+          const lines: string[] = [
+            `# GDELT 搜索: ${query}`,
+            ``,
+            `> 🕐 ${new Date().toLocaleString('zh-CN', { hour12: false })}`,
+            `> 本次新增: ${imported} 条 / 累计 GDELT 条目: ${allGdelt.length}`,
+            `> 时间窗口: 过去 ${days} 天`,
+            ``,
+            `## 本次新增标题`,
+            ``,
+          ];
+          // Show last `imported` items by createdAt (most recent first)
+          const recent = allGdelt
+            .filter((o: any) => o.metadata?.query === query)
+            .sort((a: any, b: any) => (b.occurredAt || '').localeCompare(a.occurredAt || ''))
+            .slice(0, imported);
+          for (const o of recent) {
+            const date = (o as any).occurredAt?.slice(0, 10) || '?';
+            const country = (o as any).metadata?.country || '?';
+            const url = (o as any).metadata?.url || '';
+            lines.push(`- \`${date}\` [${country}] **${(o as any).text}**`);
+            if (url) lines.push(`  - <${url}>`);
+          }
+          lines.push('');
+          lines.push('---');
+          lines.push('');
+          lines.push('**这些文章已经入 EvidenceStore**（kind=link, sourceAdapter=gdelt），可以用 "Run ACH Matrix" / "Run Team A/B" / "Generate Topic Brief" 等命令做跨源分析（同一关键词同时拉到微信原话 + GDELT 全球报道）。');
+
+          const safeName = query.replace(/[\\/:*?"<>|]/g, '_').slice(0, 40);
+          const now = new Date();
+          const slug = `gdelt-${safeName}-${now.toISOString().slice(0, 10)}-${now.toTimeString().slice(0, 5).replace(':', '')}`;
+          await this.saveBriefing(slug, lines.join('\n'));
+          new Notice(`OWH: GDELT 入库 ${imported} 条（累计 ${allGdelt.length}）→ ${this.settings.briefingFolder}/${slug}.md`, 6000);
+        } catch (err) {
+          console.error('OWH: GDELT search failed', err);
+          new Notice(`OWH: GDELT 失败 — ${(err as Error).message.slice(0, 100)}`);
         }
       },
     });
