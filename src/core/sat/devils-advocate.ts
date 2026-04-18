@@ -15,7 +15,7 @@
  */
 
 import type { Finding, DissentingView, KentPhrase, AdmiraltyCode, EvidenceRef } from '../types/finding';
-import { KENT_PROBABILITY_RANGES, parseAdmiraltyCode } from '../types/finding';
+import { KENT_PROBABILITY_RANGES, parseAdmiraltyCode, normalizeProbRange } from '../types/finding';
 
 export interface DevilsAdvocateLlm {
   complete(prompt: string): Promise<string>;
@@ -107,7 +107,7 @@ export function parseDissentingView(
   return {
     statement,
     kentPhrase,
-    probRange: [Number(probRange[0]), Number(probRange[1])] as [number, number],
+    probRange: normalizeProbRange([Number(probRange[0]), Number(probRange[1])] as [number, number]),
     keyEvidenceRefs: refs,
   };
 }

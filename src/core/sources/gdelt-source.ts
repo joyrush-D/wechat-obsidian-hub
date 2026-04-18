@@ -90,8 +90,16 @@ export class GdeltSource implements SourceAdapter {
     const maxRecords = Number(opts.filter?.maxrecords) || 20;
     const timespan = this.computeTimespan(opts);
 
+    // Default to Chinese-language sources (sourcelang:zho) when caller hasn't
+    // specified a language preference — most plugin users want Chinese-context
+    // cross-reporting on topics they're tracking via WeChat. Caller can opt
+    // out by passing `filter.lang = 'all'` or a specific lang code.
+    const lang = String(opts.filter?.lang || 'zho');
+    const langClause = lang === 'all' ? '' : ` sourcelang:${lang}`;
+    const fullQuery = `${query}${langClause}`;
+
     const url = `https://api.gdeltproject.org/api/v2/doc/doc` +
-      `?query=${encodeURIComponent(query)}` +
+      `?query=${encodeURIComponent(fullQuery)}` +
       `&format=json` +
       `&maxrecords=${maxRecords}` +
       `&timespan=${timespan}`;

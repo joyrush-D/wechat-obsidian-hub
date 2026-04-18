@@ -41,7 +41,9 @@ describe('Team A / Team B prompts', () => {
     expect(p).toContain('M9 售价');
     expect(p).toContain('消息块...');
     expect(p).toContain('Team A');
-    expect(p).toContain('严格输出 JSON');
+    // New format: explicit "严格 JSON" rule + "禁止前言后语" + JSON schema
+    expect(p).toMatch(/严格 JSON|JSON 对象/);
+    expect(p).toContain('禁止前言后语');
   });
 
   it('Team B prompt instructs contrarian discipline + does NOT mention Team A', () => {

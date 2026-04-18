@@ -14,7 +14,7 @@
  */
 
 import type { Finding, KentPhrase, AdmiraltyCode, EvidenceRef, Assumption } from '../types/finding';
-import { validateFinding, KENT_PROBABILITY_RANGES, parseAdmiraltyCode } from '../types/finding';
+import { validateFinding, KENT_PROBABILITY_RANGES, parseAdmiraltyCode, normalizeProbRange } from '../types/finding';
 import { createHash } from 'crypto';
 
 /** Build the extraction prompt. Designed for LM Studio / OpenAI-compatible. */
@@ -153,6 +153,9 @@ function buildCandidate(
   if (!parseAdmiraltyCode(sourceGrade)) return null;
   if (!(kentPhrase in KENT_PROBABILITY_RANGES)) return null;
 
+  // Auto-scale 0-1 fractions to 0-100 percentages (common LLM mistake)
+  const normalizedRange = normalizeProbRange(probRange as [number, number]);
+
   const evidenceRefs = normalizeEvidenceRefs(row.evidenceRefs);
   if (evidenceRefs.length === 0) return null;
 
@@ -167,7 +170,7 @@ function buildCandidate(
     createdAt,
     judgment,
     kentPhrase,
-    probRange,
+    probRange: normalizedRange,
     sourceGrade,
     evidenceRefs,
     assumptions,

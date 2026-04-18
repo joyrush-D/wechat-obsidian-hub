@@ -73,7 +73,7 @@ export class LlmClient {
     }
   }
 
-  async complete(prompt: string): Promise<string> {
+  async complete(prompt: string, opts: { temperature?: number; maxTokens?: number } = {}): Promise<string> {
     // Sanitize: remove null bytes and other control chars that break JSON/HTTP
     const cleanPrompt = prompt.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, ' ');
 
@@ -85,8 +85,8 @@ export class LlmClient {
 
     const body: Record<string, unknown> = {
       messages: [{ role: 'user', content: cleanPrompt }],
-      temperature: 0.3,
-      max_tokens: 8192,
+      temperature: opts.temperature ?? 0.3,
+      max_tokens: opts.maxTokens ?? 8192,
     };
     if (model) body.model = model;
 

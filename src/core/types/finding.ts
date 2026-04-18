@@ -101,6 +101,31 @@ export interface Finding {
   labels?: string[];
 }
 
+/**
+ * Normalize a probability range to [0..100] percentage scale.
+ *
+ * LLMs frequently emit probabilities on the wrong scale —
+ *   [0.7, 0.9] when they should output [70, 90]
+ *   [0.5, 0.7] when they should output [50, 70]
+ *
+ * Heuristic: if BOTH endpoints are <= 1.0, the LLM almost certainly
+ * meant fractions; multiply by 100. We don't auto-scale single-digit
+ * percentages (e.g. [3, 6] for "almost no chance") — those are valid.
+ */
+export function normalizeProbRange(range: [number, number]): [number, number] {
+  let [lo, hi] = range;
+  if (lo <= 1 && hi <= 1 && hi > 0) {
+    lo = Math.round(lo * 100);
+    hi = Math.round(hi * 100);
+  }
+  // Clamp to [0..100]
+  lo = Math.max(0, Math.min(100, lo));
+  hi = Math.max(0, Math.min(100, hi));
+  // Swap if reversed
+  if (lo > hi) [lo, hi] = [hi, lo];
+  return [lo, hi];
+}
+
 /** Standard Kent phrase → canonical probability range, per Sherman Kent (1964). */
 export const KENT_PROBABILITY_RANGES: Record<KentPhrase, [number, number]> = {
   'almost certain':       [87, 99],
