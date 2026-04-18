@@ -47,11 +47,31 @@ export function collectEvidence(
     const t = (o.text || '').toLowerCase();
     return o.kind !== 'voice' && o.kind !== 'image' && t.length >= minLen && t.includes(kw);
   });
-  return candidates.slice(0, maxEv).map((o) => ({
-    id: o.id.replace(/[^a-zA-Z0-9_-]/g, '_').slice(-24) || o.id,   // keep it short for matrix keys
+
+  // Helper: resolve an Actor reference id to its display name for human-readable
+  // output. Returns undefined when no real name exists (so the renderer can omit
+  // the noise rather than show a raw wxid / chatroom id).
+  const nameFor = (actorId: string | undefined): string | undefined => {
+    if (!actorId) return undefined;
+    const a = store.get(actorId);
+    const candidate = (a && a.type === 'actor')
+      ? (a as any).displayName as string
+      : actorId.replace(/^actor:[^:]+:/, '');
+    if (!candidate) return undefined;
+    // Suppress raw wxid / chatroom ids — those carry no info for the reader
+    if (/^wxid_[a-z0-9]+$/i.test(candidate)) return undefined;
+    if (/^[0-9]+@chatroom$/i.test(candidate)) return undefined;
+    return candidate;
+  };
+
+  return candidates.slice(0, maxEv).map((o, i) => ({
+    // Short positional ids for matrix keys — easier for the LLM to map back.
+    id: `e${i + 1}`,
     description: o.text.slice(0, 200),
     entityId: o.id,
     grade: typeof o.metadata?.admiralty === 'string' ? o.metadata.admiralty : undefined,
+    senderName: nameFor(o.authorId),
+    containerName: nameFor(o.containerId),
   }));
 }
 

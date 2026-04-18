@@ -7,6 +7,20 @@
 [![Obsidian](https://img.shields.io/badge/Obsidian-1.0+-purple.svg)](https://obsidian.md/)
 [![Repo](https://img.shields.io/badge/GitHub-joyrush--D%2Fwechat--obsidian--hub-181717.svg)](https://github.com/joyrush-D/wechat-obsidian-hub)
 
+**🌏 Languages**: **English** · [中文](README.zh-CN.md)
+
+---
+
+## 🇨🇳 中文用户：3 句话讲清楚
+
+**OWH = 微信本地情报分析 Agent**。把你 30+ 微信群每天上千条消息，用本地大模型（LM Studio）生成专业情报分析员风格的每日简报 —— 数据**全部留在你的 Mac**，不走云端 API。
+
+借鉴 CIA / NSA / 英国 JIC / 以色列 Aman 的方法论：30 秒速读、Sherman Kent 概率语词、NATO Admiralty 信源评级、ACH 竞争性假设矩阵、Devil's Advocate 反方视角、Pattern of Life 人物画像、信息接触面分析。
+
+每个判断都带证据 ID 可追溯到原消息，每个人在不同群的不同昵称都自动归并为同一身份。完整中文文档见 **[README.zh-CN.md](README.zh-CN.md)**。
+
+---
+
 ## What is this?
 
 **OWH** turns your noisy WeChat chat history into a **professional intelligence-style daily brief** — using methodologies from CIA, NSA, UK JIC, Israeli Aman, and Russian doctrine. Everything runs **on your Mac with a local LLM** (LM Studio). Nothing leaves your machine.
