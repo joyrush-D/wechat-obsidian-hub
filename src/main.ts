@@ -35,6 +35,8 @@ import { KENT_ZH_LABEL } from './core/types/finding';
 import type { Finding } from './core/types/finding';
 import { CriticAgentV1 } from './core/agent/critic-agent-v1';
 import { renderCritiqueMarkdown } from './core/agent/critic-agent';
+import { enrichWithPersonWikilinks, type PersonMention } from './obsidian/wikilink-enricher';
+import { renderPersonProfile, updatePersonProfile, extractExistingBriefingSlugs } from './obsidian/person-profile';
 import { CalibrationLog, type FindingOutcome } from './core/calibration/calibration-log';
 import type { ParsedMessage } from './types';
 
@@ -170,6 +172,14 @@ export default class OWHPlugin extends Plugin {
               }
             },
           );
+
+          // v0.11.0 — Obsidian native integration: post-process briefing to add
+          // [[wikilinks]] for known people + auto-generate per-person profile pages.
+          try {
+            await this.enrichWithObsidianLinks(messages, identityResolver, fileSlug);
+          } catch (e) {
+            console.error('OWH: wikilink enrichment failed (non-fatal):', e);
+          }
 
           // v0.5.0/v0.5.1 — Persist evidence chain:
           // (1) Actors involved in the window (from resolver, only those seen)
@@ -1431,6 +1441,128 @@ export default class OWHPlugin extends Plugin {
     const appendix = '\n\n---\n\n' + sectionMd;
     await this.app.vault.modify(file as any, briefingMarkdown + appendix);
     new Notice(`OWH: CriticAgent 完成 → ${result.issues.length} 处问题`, 5000);
+  }
+
+  /**
+   * v0.11.0 — Post-process the freshly-saved briefing: replace person mentions
+   * with [[WeChat-People/<name>|<alias>]] wikilinks, then auto-generate or
+   * update each linked person's profile page. Idempotent — re-running adds
+   * the new briefing reference to each profile without losing user notes.
+   */
+  private async enrichWithObsidianLinks(
+    messages: ParsedMessage[],
+    identityResolver: IdentityResolver | null,
+    reportSlug: string,
+  ): Promise<void> {
+    if (!identityResolver) return;
+
+    // Build PersonMention[] for everyone who spoke today (skip the user themselves)
+    const userIds = new Set<string>();
+    const userWxid = (this.settings as any).userWxid as string | undefined;
+    if (userWxid) userIds.add(userWxid);
+    const seenWxids = new Set<string>();
+    for (const m of messages) {
+      if (!m.senderWxid) continue;
+      if (m.senderWxid === userWxid) continue;
+      seenWxids.add(m.senderWxid);
+    }
+
+    const PEOPLE_FOLDER = 'WeChat-People';
+    const mentions: PersonMention[] = [];
+    const identitiesByWxid = new Map<string, ReturnType<IdentityResolver['get']>>();
+    for (const wxid of seenWxids) {
+      const id = identityResolver.get(wxid);
+      if (!id || id.isGroup) continue;
+      // Only wikilink people who have a meaningful name (not just wxid_xxx)
+      if (/^wxid_[a-z0-9]+$/i.test(id.primaryName)) continue;
+      // Aliases worth matching: skip raw wxids and 1-char names
+      const aliases = [...id.allNames]
+        .filter(n => n.length >= 2 && !/^wxid_[a-z0-9]+$/i.test(n))
+        .filter(n => !userIds.has(n));
+      if (aliases.length === 0) continue;
+      mentions.push({ name: id.primaryName, aliases, folder: PEOPLE_FOLDER });
+      identitiesByWxid.set(wxid, id);
+    }
+
+    if (mentions.length === 0) return;
+
+    // Read briefing → enrich → save back
+    const briefingPath = `${this.settings.briefingFolder}/${reportSlug}.md`;
+    const file = this.app.vault.getAbstractFileByPath(briefingPath);
+    if (!file) return;
+    const original = await this.app.vault.read(file as any);
+    const { enriched, linkedNames } = enrichWithPersonWikilinks(original, mentions);
+    if (enriched !== original) {
+      await this.app.vault.modify(file as any, enriched);
+    }
+
+    // Generate / update profile pages for each linked person
+    let createdCount = 0;
+    let updatedCount = 0;
+    const peopleFolderExists = await this.app.vault.adapter.exists(PEOPLE_FOLDER);
+    if (!peopleFolderExists) await this.app.vault.createFolder(PEOPLE_FOLDER);
+
+    for (const linkedName of linkedNames) {
+      // Find the identity that owns this primaryName
+      const id = [...identitiesByWxid.values()].find(i => i?.primaryName === linkedName);
+      if (!id) continue;
+
+      // Group names this person belongs to (best-effort from groupAliases)
+      const groupNames: string[] = [];
+      for (const groupId of id.groupAliases.keys()) {
+        const ga = identityResolver.get(groupId);
+        if (ga?.primaryName) groupNames.push(ga.primaryName);
+      }
+
+      // Pull recent quotes (latest 8) for this person from today's messages
+      const quotes = messages
+        .filter(m => m.senderWxid === id.wxid && m.text.length > 5 && m.type !== 'emoji' && m.type !== 'system')
+        .slice(-8)
+        .map(m => ({
+          time: m.time.toTimeString().slice(0, 5),
+          text: m.text,
+          conversation: m.conversationName || m.conversationId,
+        }));
+
+      const safeFileName = linkedName.replace(/[\\/:*?"<>|]/g, '_').slice(0, 80);
+      const profilePath = `${PEOPLE_FOLDER}/${safeFileName}.md`;
+      const existingFile = this.app.vault.getAbstractFileByPath(profilePath);
+
+      let existingSlugs: string[] = [];
+      let existingContent = '';
+      if (existingFile) {
+        existingContent = await this.app.vault.read(existingFile as any);
+        existingSlugs = extractExistingBriefingSlugs(existingContent);
+      }
+
+      const recentSlugs = [reportSlug, ...existingSlugs.filter(s => s !== reportSlug)].slice(0, 30);
+      const profileInput = {
+        identity: id,
+        groupNames: [...new Set(groupNames)].sort(),
+        recentBriefingSlugs: recentSlugs,
+        recentQuotes: quotes,
+        briefingFolder: this.settings.briefingFolder,
+      };
+
+      const newContent = existingContent
+        ? updatePersonProfile(existingContent, profileInput)
+        : renderPersonProfile(profileInput);
+
+      if (existingFile) {
+        await this.app.vault.modify(existingFile as any, newContent);
+        updatedCount++;
+      } else {
+        await this.app.vault.create(profilePath, newContent);
+        createdCount++;
+      }
+    }
+
+    if (createdCount + updatedCount > 0) {
+      new Notice(
+        `OWH: 人物档案 ${createdCount} 新建 / ${updatedCount} 更新 (${linkedNames.size} 人 wikilink)`,
+        5000,
+      );
+    }
   }
 
   /**
