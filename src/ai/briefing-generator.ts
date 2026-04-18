@@ -760,7 +760,12 @@ export class BriefingGenerator {
     const earliestMsgTime = messages.length > 0
       ? new Date(Math.min(...messages.map(m => m.time.getTime())))
       : new Date();
-    const fmt = (d: Date) => d.toLocaleString('zh-CN', { hour12: false }).replace(/\//g, '-');
+    // Zero-pad date components to YYYY-MM-DD HH:MM:SS so logs look uniform
+    // (zh-CN locale produces "2026-4-17 23:30:00" with single-digit month/day)
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const fmt = (d: Date) =>
+      `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+      `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
     const ageMin = Math.round((Date.now() - latestMsgTime.getTime()) / 60000);
     const freshness = ageMin < 10 ? '🟢 最新' : ageMin < 60 ? `🟡 ${ageMin} 分钟前` : `🔴 ${Math.round(ageMin/60)} 小时前`;
 
@@ -894,7 +899,9 @@ export class BriefingGenerator {
     const sections: string[] = [];
     sections.push(`# 微信日报 ${date}\n\n_报告生成时间: ${reportGenTime} · 数据范围: ${fmt(earliestMsgTime)} → ${fmt(latestMsgTime)} (${freshness}) · ${triaged.length} 条有效消息 / ${totalConversations} 个对话_`);
     if (directMentions) {
-      sections.push(directMentions + '\n\n---');
+      // Use single divider, not the "+ '\n\n---'" pattern that produced
+      // triple newlines in the rendered output
+      sections.push(directMentions);
     }
     sections.push(mainBrief);
     if (tearline) {
