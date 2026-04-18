@@ -77,6 +77,9 @@ export class AgentRunner {
         tools,
         stopWhen: stepCountIs(this.maxSteps),
         temperature: this.temperature,
+        // Cap output per turn to avoid "prompt_budget + max_tokens > context"
+        // errors when the underlying server enforces a token budget.
+        maxOutputTokens: 2048,
       });
       return {
         text: result.text || '',
@@ -84,11 +87,21 @@ export class AgentRunner {
         steps: (result as any).steps?.length ?? 1,
       };
     } catch (e) {
+      // Surface the most useful diagnostic — vercel/ai wraps errors
+      // and the cause/data fields often hold the underlying HTTP body
+      const err = e as any;
+      const msg = err?.message || String(err);
+      const cause = err?.cause?.message || err?.cause?.value?.error || '';
+      const responseBody = err?.responseBody || err?.data || err?.response?.data || '';
+      console.error('OWH AgentRunner error:', msg, '| cause:', cause, '| body:', JSON.stringify(responseBody).slice(0, 500));
+      const detailed = [msg, cause, typeof responseBody === 'string' ? responseBody.slice(0, 200) : '']
+        .filter(Boolean)
+        .join(' · ');
       return {
         text: '',
         toolCallCount: 0,
         steps: 0,
-        error: (e as Error).message,
+        error: detailed,
       };
     }
   }

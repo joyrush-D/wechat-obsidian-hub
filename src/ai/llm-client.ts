@@ -92,6 +92,10 @@ export class LlmClient {
 
     console.log(`OWH: Sending ${cleanPrompt.length} chars to LM Studio (${model || 'currently loaded'})...`);
 
+    // Note on timeouts:
+    //   Obsidian (Electron) uses Chromium's fetch — 5min default, no issue.
+    //   Node test harness: undici has 30s headers timeout. Run tests with
+    //   NODE_OPTIONS or wrap fetch externally if you hit UND_ERR_HEADERS_TIMEOUT.
     const response = await fetch(`${this.endpoint}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

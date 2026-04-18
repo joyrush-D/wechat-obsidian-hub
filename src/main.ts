@@ -33,6 +33,8 @@ import { runTeamAb, renderTeamAbMarkdown } from './core/sat/team-ab';
 import { GdeltSource } from './core/sources/gdelt-source';
 import { KENT_ZH_LABEL } from './core/types/finding';
 import type { Finding } from './core/types/finding';
+import { CriticAgentV1 } from './core/agent/critic-agent-v1';
+import { renderCritiqueMarkdown } from './core/agent/critic-agent';
 import { CalibrationLog, type FindingOutcome } from './core/calibration/calibration-log';
 import type { ParsedMessage } from './types';
 
@@ -1285,6 +1287,15 @@ export default class OWHPlugin extends Plugin {
       }
     }
 
+    // v0.10.0 — Critic Agent fact-check pass (opt-in, Hermes tool-calling)
+    if (this.settings.enableCriticAgent && findings.length > 0) {
+      try {
+        await this.runCriticAgent(findings, store, this.identityResolver, reportSlug);
+      } catch (e) {
+        console.error('OWH: Critic Agent pass failed (non-fatal):', e);
+      }
+    }
+
     const stats = store.stats();
     console.log(`OWH: EvidenceStore — ${stats.actors} actors, ${stats.objects} objects, ${stats.findings} findings`);
     new Notice(
@@ -1375,6 +1386,51 @@ export default class OWHPlugin extends Plugin {
       }
     }
     return lines.join('\n');
+  }
+
+  /**
+   * v0.10.0 — Run CriticAgentV1 (Hermes tool-calling) over the day's
+   * findings to flag misattribution / overconfidence / missing-evidence.
+   * Appends a "🔍 事实核查（CriticAgent）" section to the briefing file.
+   */
+  private async runCriticAgent(
+    findings: Finding[],
+    store: EvidenceStore,
+    identityResolver: IdentityResolver | null,
+    reportSlug: string,
+  ): Promise<void> {
+    const userWxids = identityResolver
+      ? [...new Set(identityResolver.allIdentities()
+          .flatMap(id => [...id.allNames])
+          .filter(n => /^wxid_[a-z0-9]+$/i.test(n)))]
+      : [];
+
+    new Notice('OWH: CriticAgent 启动，独立 LLM context 查证主张...');
+    const critic = new CriticAgentV1({
+      store,
+      userWxids,
+      baseURL: this.settings.aiEndpoint,
+      modelId: this.settings.criticAgentModel,
+      maxSteps: 12,
+    });
+
+    const briefingPath = `${this.settings.briefingFolder}/${reportSlug}.md`;
+    const file = this.app.vault.getAbstractFileByPath(briefingPath);
+    if (!file) {
+      console.warn('OWH: CriticAgent — briefing file not found, skipping');
+      return;
+    }
+    const briefingMarkdown = await this.app.vault.read(file as any);
+
+    const result = await critic.critique({ briefingMarkdown, findings });
+    if (result.errors.length > 0) {
+      console.warn('OWH: CriticAgent partial errors:', result.errors.slice(0, 5));
+    }
+
+    const sectionMd = renderCritiqueMarkdown(result.issues);
+    const appendix = '\n\n---\n\n' + sectionMd;
+    await this.app.vault.modify(file as any, briefingMarkdown + appendix);
+    new Notice(`OWH: CriticAgent 完成 → ${result.issues.length} 处问题`, 5000);
   }
 
   /**

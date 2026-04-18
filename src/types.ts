@@ -34,6 +34,10 @@ export interface OWHSettings {
   // v0.8.1 — Devil's Advocate (multi-agent adversarial reasoning)
   enableDevilsAdvocate: boolean;   // default off (extra LLM call per finding)
   devilsAdvocateTopN: number;      // how many top findings get a DA pass
+
+  // v0.10.0 — Critic Agent (Hermes tool-calling fact-checker)
+  enableCriticAgent: boolean;
+  criticAgentModel: string;        // empty = whatever is loaded; recommend hermes-4
 }
 
 export const DEFAULT_SETTINGS: OWHSettings = {
@@ -66,6 +70,9 @@ export const DEFAULT_SETTINGS: OWHSettings = {
 
   enableDevilsAdvocate: false,
   devilsAdvocateTopN: 3,
+
+  enableCriticAgent: false,
+  criticAgentModel: '',
 };
 
 export interface Contact {
