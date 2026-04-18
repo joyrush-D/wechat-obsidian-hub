@@ -176,7 +176,7 @@ export default class OWHPlugin extends Plugin {
           // v0.11.0 — Obsidian native integration: post-process briefing to add
           // [[wikilinks]] for known people + auto-generate per-person profile pages.
           try {
-            await this.enrichWithObsidianLinks(messages, identityResolver, fileSlug);
+            await this.enrichWithObsidianLinks(messages, identityResolver, fileSlug, userIdsList);
           } catch (e) {
             console.error('OWH: wikilink enrichment failed (non-fatal):', e);
           }
@@ -1453,17 +1453,30 @@ export default class OWHPlugin extends Plugin {
     messages: ParsedMessage[],
     identityResolver: IdentityResolver | null,
     reportSlug: string,
+    userIdentities: string[] = [],
   ): Promise<void> {
     if (!identityResolver) return;
 
+    // Resolve the user's canonical Identity (any of userIdentities resolves to it)
+    let userOwnWxid: string | null = null;
+    for (const id of userIdentities) {
+      const found = identityResolver.findByName(id);
+      if (found) { userOwnWxid = found.wxid; break; }
+    }
+
+    // Build a Set of user identity tokens (lowercased) for quick alias filtering
+    const userTokens = new Set<string>();
+    for (const id of userIdentities) {
+      if (id) userTokens.add(id.toLowerCase());
+    }
+    if (userOwnWxid) userTokens.add(userOwnWxid.toLowerCase());
+
     // Build PersonMention[] for everyone who spoke today (skip the user themselves)
-    const userIds = new Set<string>();
-    const userWxid = (this.settings as any).userWxid as string | undefined;
-    if (userWxid) userIds.add(userWxid);
     const seenWxids = new Set<string>();
     for (const m of messages) {
       if (!m.senderWxid) continue;
-      if (m.senderWxid === userWxid) continue;
+      if (m.senderWxid === userOwnWxid) continue;            // user's own messages
+      if (userTokens.has(m.senderWxid.toLowerCase())) continue;
       seenWxids.add(m.senderWxid);
     }
 
@@ -1473,12 +1486,14 @@ export default class OWHPlugin extends Plugin {
     for (const wxid of seenWxids) {
       const id = identityResolver.get(wxid);
       if (!id || id.isGroup) continue;
+      // Belt-and-suspenders: skip if THIS identity resolves to the user
+      if (userOwnWxid && id.wxid === userOwnWxid) continue;
       // Only wikilink people who have a meaningful name (not just wxid_xxx)
       if (/^wxid_[a-z0-9]+$/i.test(id.primaryName)) continue;
-      // Aliases worth matching: skip raw wxids and 1-char names
+      // Aliases worth matching: skip raw wxids, 1-char names, and any user alias
       const aliases = [...id.allNames]
         .filter(n => n.length >= 2 && !/^wxid_[a-z0-9]+$/i.test(n))
-        .filter(n => !userIds.has(n));
+        .filter(n => !userTokens.has(n.toLowerCase()));
       if (aliases.length === 0) continue;
       mentions.push({ name: id.primaryName, aliases, folder: PEOPLE_FOLDER });
       identitiesByWxid.set(wxid, id);
