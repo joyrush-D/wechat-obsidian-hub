@@ -30,6 +30,8 @@ import { messageToObject } from './core/messaging/object-factory';
 import { collectEvidence, runAch } from './core/sat/ach-runner';
 import { generateDissentingView } from './core/sat/devils-advocate';
 import { KENT_ZH_LABEL } from './core/types/finding';
+import type { Finding } from './core/types/finding';
+import { CalibrationLog, type FindingOutcome } from './core/calibration/calibration-log';
 import type { ParsedMessage } from './types';
 
 export default class OWHPlugin extends Plugin {
@@ -284,6 +286,96 @@ export default class OWHPlugin extends Plugin {
           new Notice(`OWH: ACH 分析已生成 → ${this.settings.briefingFolder}/${slug}.md`, 6000);
         } catch (err) {
           console.error('OWH: ACH analysis failed', err);
+          new Notice(`OWH: Error — ${(err as Error).message}`);
+        }
+      },
+    });
+
+    // Command: Show Calibration Report (v0.7.1)
+    this.addCommand({
+      id: 'show-calibration-report',
+      name: 'Show Calibration Report (Brier scores)',
+      callback: async () => {
+        try {
+          const dir = join(process.env.HOME || '', '.wechat-hub', 'evidence-store');
+          if (!existsSync(dir)) {
+            new Notice('OWH: 证据库为空。先跑一次 Generate WeChat Briefing。');
+            return;
+          }
+          const store = new EvidenceStore(dir);
+          const findings = store.listFindings();
+          if (findings.length === 0) {
+            new Notice('OWH: 证据库还没有 Finding。');
+            return;
+          }
+          const calib = new CalibrationLog(dir);
+          const md = calib.renderMarkdown(findings);
+
+          const now = new Date();
+          const slug = `calibration-${now.toISOString().slice(0, 10)}-${now.toTimeString().slice(0, 5).replace(':', '')}`;
+          // Append a "如何标记结果" section so user knows how to populate outcomes
+          const helper = `\n\n---\n\n## 📝 如何标记判断结果\n\n校准数据来自 \`~/.wechat-hub/evidence-store/outcomes.json\`。`+
+            `用 "Resolve Finding" 命令（或直接编辑该 JSON）记录每个 Finding 的事后结果：\n\n`+
+            `\`\`\`json\n{\n  "<findingId>": {\n    "findingId": "<findingId>",\n    "outcome": "confirmed|refuted|partial",\n    "notes": "你看到了什么",\n    "resolvedAt": "ISO timestamp"\n  }\n}\n\`\`\`\n\n`+
+            `然后重新运行此命令，Brier 分数和命中率就会更新。`;
+          await this.saveBriefing(slug, md + helper);
+          new Notice(`OWH: 校准报告已生成 → ${this.settings.briefingFolder}/${slug}.md`, 5000);
+        } catch (err) {
+          console.error('OWH: Calibration report failed', err);
+          new Notice(`OWH: Error — ${(err as Error).message}`);
+        }
+      },
+    });
+
+    // Command: Resolve Finding (v0.7.1)
+    this.addCommand({
+      id: 'resolve-finding',
+      name: 'Resolve Finding (record outcome for Brier calibration)',
+      callback: async () => {
+        try {
+          const dir = join(process.env.HOME || '', '.wechat-hub', 'evidence-store');
+          if (!existsSync(dir)) {
+            new Notice('OWH: 证据库为空。先跑一次 Generate WeChat Briefing。');
+            return;
+          }
+          const store = new EvidenceStore(dir);
+          const findings = store.listFindings();
+          if (findings.length === 0) {
+            new Notice('OWH: 证据库还没有 Finding。');
+            return;
+          }
+
+          const idQuery = await this.promptForInput(
+            '判断 ID 或 judgment 子串',
+            '可粘贴 finding:xxxxx 或输入判断的几个字',
+          );
+          if (!idQuery) return;
+
+          const matched = this.findFindingByQuery(findings, idQuery);
+          if (!matched) {
+            new Notice('OWH: 未找到匹配的 Finding。');
+            return;
+          }
+
+          const outcome = await this.promptForInput(
+            `匹配到判断: "${matched.judgment.slice(0, 40)}..."  →  请输入结果`,
+            'confirmed / refuted / partial',
+          );
+          if (!outcome) return;
+          const normalized = outcome.trim().toLowerCase() as FindingOutcome;
+          if (normalized !== 'confirmed' && normalized !== 'refuted' && normalized !== 'partial') {
+            new Notice(`OWH: 无效结果 "${outcome}". 必须是 confirmed/refuted/partial`);
+            return;
+          }
+
+          const notes = await this.promptForInput('备注（可选）', '观察到了什么', '') || undefined;
+
+          const calib = new CalibrationLog(dir);
+          const rec = calib.resolve(matched.id, normalized, { notes });
+          new Notice(`OWH: 已记录 ${normalized}: "${matched.judgment.slice(0, 40)}"`, 5000);
+          console.log('OWH: outcome recorded', rec);
+        } catch (err) {
+          console.error('OWH: Resolve finding failed', err);
           new Notice(`OWH: Error — ${(err as Error).message}`);
         }
       },
@@ -1161,6 +1253,20 @@ export default class OWHPlugin extends Plugin {
       }
     }
     return lines.join('\n');
+  }
+
+  /**
+   * Find a Finding by either its full id (preferred), an id substring,
+   * or a substring of its judgment text. Most-recently-created wins on ties.
+   */
+  private findFindingByQuery(findings: Finding[], query: string): Finding | null {
+    const q = query.trim().toLowerCase();
+    const sorted = [...findings].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return sorted.find(f =>
+      f.id.toLowerCase() === q ||
+      f.id.toLowerCase().includes(q) ||
+      f.judgment.toLowerCase().includes(q),
+    ) ?? null;
   }
 
   /** Best-effort detection of the WeChat media root (Mac-only, xwechat_files layout). */
