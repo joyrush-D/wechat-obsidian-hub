@@ -885,22 +885,21 @@ export class BriefingGenerator {
     // consistent aggregation.
 
     // Compose final document. Order matters for boss UX:
-    // 1. Second-pass Tearline (optional; skipped by default since direct synthesis
-    //    already has its own "30 秒速读" section)
-    // 2. Direct @ mentions (raw scan, never cached)
-    // 3. Main brief (full PDB, its own BLUF up top)
-    // 4. Pattern of Life (who said what — names aggregated per wxid, no alias noise)
-    // 5. Reflexive Control (what to question)
-    // 6. Bias Audit (self-check)
-    // 7. Shareable Tearline (team-ready, below dashed line)
+    // 1. Document H1 (single, system-prepended — was duplicated before)
+    // 2. Direct @ mentions (mechanical scan, raw + complete)
+    // 3. Main brief (LLM — its own H2 sections, no H1)
+    // 4. Optional second-pass Tearline (off by default)
+    // 5. Pattern of Life (mechanical, no alias noise)
+    // 6. Reflexive Control / Bias Audit / Devil's Advocate appendix (later, by main.ts)
     const sections: string[] = [];
-    if (tearline) {
-      sections.push(`# ⚡ 30 秒速读（压缩版） — ${date}\n\n${tearline}\n\n---`);
-    }
+    sections.push(`# 微信日报 ${date}\n\n_报告生成时间: ${reportGenTime} · 数据范围: ${fmt(earliestMsgTime)} → ${fmt(latestMsgTime)} (${freshness}) · ${triaged.length} 条有效消息 / ${totalConversations} 个对话_`);
     if (directMentions) {
       sections.push(directMentions + '\n\n---');
     }
     sections.push(mainBrief);
+    if (tearline) {
+      sections.push(`---\n\n## ⚡ 30 秒速读（二轮压缩版）\n\n${tearline}`);
+    }
     if (patternOfLife) {
       sections.push(`---\n\n## 👥 重要人物今日画像 (Pattern of Life)\n\n${patternOfLife}`);
     }

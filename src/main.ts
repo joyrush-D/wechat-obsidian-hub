@@ -1417,15 +1417,17 @@ export default class OWHPlugin extends Plugin {
       await this.app.vault.createFolder(folder);
     }
     const filePath = `${folder}/${date}.md`;
-    const header = `# WeChat Briefing — ${date}\n\n`;
+    // No system header prepended — every command's content already starts
+    // with a proper H1 (`# 微信日报...` / `# ACH 分析...` / etc.). Adding
+    // `# WeChat Briefing — <slug>` on top produced confusing dual headers.
     const existing = await this.app.vault.adapter.exists(filePath);
     if (existing) {
       const file = this.app.vault.getAbstractFileByPath(filePath);
       if (file) {
-        await this.app.vault.modify(file as any, header + content);
+        await this.app.vault.modify(file as any, content);
       }
     } else {
-      await this.app.vault.create(filePath, header + content);
+      await this.app.vault.create(filePath, content);
     }
   }
 }

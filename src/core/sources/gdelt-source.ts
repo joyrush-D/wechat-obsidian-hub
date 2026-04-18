@@ -42,10 +42,44 @@ export interface GdeltFetcher {
   (url: string): Promise<{ articles: GdeltArticle[] }>;
 }
 
+// GDELT public API enforces "≤1 request per 5 seconds". We track the last
+// fetch timestamp module-globally so back-to-back invocations across
+// command runs don't trip the rate limit.
+let lastGdeltFetchAt = 0;
+const GDELT_MIN_INTERVAL_MS = 5500;   // 5s + small safety margin
+
+async function throttledGdeltFetch(url: string): Promise<Response> {
+  const now = Date.now();
+  const wait = lastGdeltFetchAt + GDELT_MIN_INTERVAL_MS - now;
+  if (wait > 0) {
+    await new Promise(resolve => setTimeout(resolve, wait));
+  }
+  lastGdeltFetchAt = Date.now();
+  return fetch(url);
+}
+
 const DEFAULT_FETCHER: GdeltFetcher = async (url) => {
-  const resp = await fetch(url);
+  let resp = await throttledGdeltFetch(url);
+  if (resp.status === 429) {
+    // Back off and retry once with a longer wait
+    await new Promise(r => setTimeout(r, 6000));
+    resp = await throttledGdeltFetch(url);
+  }
   if (!resp.ok) throw new Error(`GDELT API ${resp.status}: ${(await resp.text().catch(() => '')).slice(0, 200)}`);
-  const data = await resp.json();
+  // GDELT 2.0 returns plain-text error messages when the query is malformed
+  // (e.g. "Your search expression is invalid"). Detect and surface those
+  // before attempting JSON parse.
+  const body = await resp.text();
+  const trimmed = body.trim();
+  if (!trimmed.startsWith('{')) {
+    throw new Error(`GDELT query rejected: ${trimmed.slice(0, 200)}`);
+  }
+  let data: any;
+  try {
+    data = JSON.parse(body);
+  } catch {
+    throw new Error(`GDELT non-JSON response: ${body.slice(0, 200)}`);
+  }
   return { articles: Array.isArray(data?.articles) ? data.articles : [] };
 };
 
@@ -90,13 +124,13 @@ export class GdeltSource implements SourceAdapter {
     const maxRecords = Number(opts.filter?.maxrecords) || 20;
     const timespan = this.computeTimespan(opts);
 
-    // Default to Chinese-language sources (sourcelang:zho) when caller hasn't
-    // specified a language preference — most plugin users want Chinese-context
-    // cross-reporting on topics they're tracking via WeChat. Caller can opt
-    // out by passing `filter.lang = 'all'` or a specific lang code.
-    const lang = String(opts.filter?.lang || 'zho');
-    const langClause = lang === 'all' ? '' : ` sourcelang:${lang}`;
-    const fullQuery = `${query}${langClause}`;
+    // GDELT's keyword tokenizer rejects short Chinese terms ("keyword too
+    // short"). The caller must own the query — they can add modifiers like
+    // `sourcelang:zho` (Chinese sources only), `sourcecountry:CH` (China),
+    // or quoted phrases themselves. Auto-prepending `sourcelang:zho` was a
+    // mistake (broke 2-char Chinese keywords).
+    const explicitLang = opts.filter?.lang ? ` sourcelang:${String(opts.filter.lang)}` : '';
+    const fullQuery = `${query}${explicitLang}`;
 
     const url = `https://api.gdeltproject.org/api/v2/doc/doc` +
       `?query=${encodeURIComponent(fullQuery)}` +
