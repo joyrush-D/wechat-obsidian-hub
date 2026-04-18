@@ -44,6 +44,8 @@ import {
   buildBriefingSection,
   insertOrReplaceBriefingSection,
 } from './obsidian/daily-note';
+import { extractTopics, injectTopicWikilinks, topicSlug } from './obsidian/topic-extractor';
+import { renderTopicProfile, updateTopicProfile, extractExistingBriefingSlugsFromTopic } from './obsidian/topic-profile';
 import { CalibrationLog, type FindingOutcome } from './core/calibration/calibration-log';
 import type { ParsedMessage } from './types';
 
@@ -186,6 +188,13 @@ export default class OWHPlugin extends Plugin {
             await this.enrichWithObsidianLinks(messages, identityResolver, fileSlug, userIdsList);
           } catch (e) {
             console.error('OWH: wikilink enrichment failed (non-fatal):', e);
+          }
+
+          // v0.11.2 — Topic wikilinks + per-topic profile pages
+          try {
+            await this.enrichWithTopicWikilinks(fileSlug);
+          } catch (e) {
+            console.error('OWH: topic enrichment failed (non-fatal):', e);
           }
 
           // v0.5.0/v0.5.1 — Persist evidence chain:
@@ -1645,6 +1654,95 @@ export default class OWHPlugin extends Plugin {
         `OWH: 人物档案 ${createdCount} 新建 / ${updatedCount} 更新 (${linkedNames.size} 人 wikilink)`,
         5000,
       );
+    }
+  }
+
+  /**
+   * Convert "2026-04-18-1341" briefing slug to ISO 2026-04-18T13:41:00Z.
+   * Falls back to `nowIso` when the slug doesn't parse cleanly.
+   */
+  private slugToIso(slug: string, nowIso: string): string {
+    const m = /^(\d{4})-(\d{2})-(\d{2})(?:-(\d{2})(\d{2}))?/.exec(slug);
+    if (!m) return nowIso;
+    const [, y, mo, d, hh = '00', mm = '00'] = m;
+    return `${y}-${mo}-${d}T${hh}:${mm}:00Z`;
+  }
+
+  /**
+   * v0.11.2 — Extract H3 topic headers under "今日要闻", append a
+   * `[[WeChat-Topics/<title>]]` reference after each, generate or update
+   * the corresponding topic profile pages (idempotent).
+   */
+  private async enrichWithTopicWikilinks(reportSlug: string): Promise<void> {
+    const TOPIC_FOLDER = 'WeChat-Topics';
+    const briefingPath = `${this.settings.briefingFolder}/${reportSlug}.md`;
+    const file = this.app.vault.getAbstractFileByPath(briefingPath);
+    if (!file) return;
+
+    const briefing = await this.app.vault.read(file as any);
+    const topics = extractTopics(briefing);
+    if (topics.length === 0) return;
+
+    // Inject "→ [[WeChat-Topics/<slug>]]" inline references
+    const { enriched, linked } = injectTopicWikilinks(briefing, topics, TOPIC_FOLDER);
+    if (enriched !== briefing) {
+      await this.app.vault.modify(file as any, enriched);
+    }
+
+    // Ensure folder exists
+    const folderExists = await this.app.vault.adapter.exists(TOPIC_FOLDER);
+    if (!folderExists) await this.app.vault.createFolder(TOPIC_FOLDER);
+
+    // Generate / update each topic's profile page
+    let createdCount = 0;
+    let updatedCount = 0;
+    const nowIso = new Date().toISOString();
+    for (const topic of topics) {
+      if (!linked.has(topic.title)) continue;
+      const slug = topicSlug(topic.title);
+      if (!slug) continue;
+      const profilePath = `${TOPIC_FOLDER}/${slug}.md`;
+      const existingFile = this.app.vault.getAbstractFileByPath(profilePath);
+
+      let priorSlugs: string[] = [];
+      let priorContent = '';
+      let priorFirstSeen: string | null = null;
+      if (existingFile) {
+        priorContent = await this.app.vault.read(existingFile as any);
+        priorSlugs = extractExistingBriefingSlugsFromTopic(priorContent);
+        // Try to recover prior first_seen from frontmatter
+        const m = /first_seen:\s*"?([^"\n]+)"?/.exec(priorContent);
+        if (m) priorFirstSeen = m[1].trim();
+      }
+
+      const allSlugs = [reportSlug, ...priorSlugs.filter(s => s !== reportSlug)].slice(0, 30);
+      const sortedAsc = [...allSlugs].sort();
+      const earliest = sortedAsc[0] || reportSlug;
+      const earliestIso = priorFirstSeen || this.slugToIso(earliest, nowIso);
+
+      const input = {
+        topic,
+        briefingSlugs: allSlugs,
+        briefingFolder: this.settings.briefingFolder,
+        firstSeen: earliestIso,
+        lastSeen: nowIso,
+      };
+
+      const newContent = priorContent
+        ? updateTopicProfile(priorContent, input)
+        : renderTopicProfile(input);
+
+      if (existingFile) {
+        await this.app.vault.modify(existingFile as any, newContent);
+        updatedCount++;
+      } else {
+        await this.app.vault.create(profilePath, newContent);
+        createdCount++;
+      }
+    }
+
+    if (createdCount + updatedCount > 0) {
+      new Notice(`OWH: 话题档案 ${createdCount} 新建 / ${updatedCount} 更新 (${linked.size} 个话题 wikilink)`, 5000);
     }
   }
 
